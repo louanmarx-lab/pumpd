@@ -1,0 +1,3 @@
+{
+  "ignore_dirs": ["uiux-designer", ".git", ".gemini", "node_modules"]
+}
