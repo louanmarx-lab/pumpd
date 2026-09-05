@@ -130,4 +130,10 @@ export interface HistoricalBenchmark {
   previousSessionDate?: string;
   maxRepsAtWeight: number;
   estimated1RM: number; // Brzycki formula
+  bestWorkingSet?: {
+    weightKg: number;
+    reps: number;
+    estimated1RM: number;
+    date?: string;
+  };
 }

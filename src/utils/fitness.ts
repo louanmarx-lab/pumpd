@@ -29,6 +29,7 @@ export function getExerciseHistory(
   let previousSessionDate: string | undefined = undefined;
   let maxRepsAtWeight = 0;
   let max1RM = 0;
+  let bestWorkingSet: { weightKg: number; reps: number; estimated1RM: number; date?: string } | undefined = undefined;
 
   for (const log of sortedLogs) {
     const loggedEx = log.exercises.find((e) => e.exerciseId === exerciseId);
@@ -40,13 +41,29 @@ export function getExerciseHistory(
       previousSessionDate = log.date;
     }
 
-    // Process sets for PR max reps and max 1RM
+    // Process sets for PR max reps, max 1RM, and best multi-rep working set (>1 rep)
     for (const set of loggedEx.sets) {
       if (!set.isCompleted || set.weightKg <= 0 || set.reps <= 0) continue;
 
       const e1RM = calculate1RM(set.weightKg, set.reps);
       if (e1RM > max1RM) {
         max1RM = e1RM;
+      }
+
+      // Best set that is NOT a 1-rep max (reps > 1)
+      if (set.reps > 1) {
+        if (
+          !bestWorkingSet ||
+          e1RM > bestWorkingSet.estimated1RM ||
+          (e1RM === bestWorkingSet.estimated1RM && set.weightKg > bestWorkingSet.weightKg)
+        ) {
+          bestWorkingSet = {
+            weightKg: set.weightKg,
+            reps: set.reps,
+            estimated1RM: e1RM,
+            date: log.date,
+          };
+        }
       }
 
       if (currentWeight > 0 && Math.abs(set.weightKg - currentWeight) < 0.1) {
@@ -62,7 +79,74 @@ export function getExerciseHistory(
     previousSessionDate,
     maxRepsAtWeight,
     estimated1RM: max1RM,
+    bestWorkingSet,
   };
+}
+
+export interface ExerciseSessionProgress {
+  logId: string;
+  date: string;
+  timestamp: number;
+  routineName: string;
+  maxWeightKg: number;
+  bestSet: { weightKg: number; reps: number; estimated1RM: number };
+  estimated1RM: number;
+  totalVolumeKg: number;
+  completedSetsCount: number;
+}
+
+/**
+ * Returns chronological progress points for a single exercise across all sessions.
+ */
+export function getExerciseProgression(
+  workoutLogs: WorkoutLog[],
+  exerciseId: string
+): ExerciseSessionProgress[] {
+  const sortedLogs = [...workoutLogs].sort((a, b) => a.timestamp - b.timestamp);
+  const progress: ExerciseSessionProgress[] = [];
+
+  for (const log of sortedLogs) {
+    const loggedEx = log.exercises.find((e) => e.exerciseId === exerciseId);
+    if (!loggedEx) continue;
+
+    const completedSets = loggedEx.sets.filter(
+      (s) => s.isCompleted && s.weightKg > 0 && s.reps > 0
+    );
+    if (completedSets.length === 0) continue;
+
+    let maxWeightKg = 0;
+    let dayMax1RM = 0;
+    let totalVolumeKg = 0;
+    let bestSet = { weightKg: 0, reps: 0, estimated1RM: 0 };
+
+    for (const set of completedSets) {
+      if (set.weightKg > maxWeightKg) {
+        maxWeightKg = set.weightKg;
+      }
+      totalVolumeKg += set.weightKg * set.reps;
+      const e1RM = calculate1RM(set.weightKg, set.reps);
+      if (e1RM > dayMax1RM) {
+        dayMax1RM = e1RM;
+      }
+      if (e1RM > bestSet.estimated1RM) {
+        bestSet = { weightKg: set.weightKg, reps: set.reps, estimated1RM: e1RM };
+      }
+    }
+
+    progress.push({
+      logId: log.id,
+      date: log.date,
+      timestamp: log.timestamp,
+      routineName: log.routineName,
+      maxWeightKg,
+      bestSet,
+      estimated1RM: dayMax1RM,
+      totalVolumeKg: Math.round(totalVolumeKg),
+      completedSetsCount: completedSets.length,
+    });
+  }
+
+  return progress;
 }
 
 /**

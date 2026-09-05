@@ -513,12 +513,23 @@ export default function ActiveSessionScreen() {
                     Benchmark Reference ({activeUser.displayName})
                   </Text>
                   <View className="flex-row justify-between items-center">
-                    {/* Previous Session */}
+                    {/* Best Working Set (Not 1RM) */}
                     <View className="flex-1 mr-2 border-r border-zinc-800 pr-2">
-                      <Text className="text-[10px] text-zinc-500 font-medium">Prev Session</Text>
-                      {history.previousSessionSets.length > 0 ? (
-                        <Text className="text-xs font-bold text-zinc-200">
-                          {history.previousSessionSets[0].weightKg}kg × {history.previousSessionSets[0].reps} ({history.previousSessionSets.length} sets)
+                      <Text className="text-[10px] text-zinc-500 font-medium">Best Set (&gt;1 rep)</Text>
+                      {history.bestWorkingSet ? (
+                        <View>
+                          <Text className="text-xs font-bold text-accent-cyan">
+                            {history.bestWorkingSet.weightKg}kg × {history.bestWorkingSet.reps}
+                          </Text>
+                          {history.bestWorkingSet.date ? (
+                            <Text className="text-[9px] text-zinc-500">
+                              {history.bestWorkingSet.date}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ) : history.previousSessionSets.length > 0 ? (
+                        <Text className="text-xs font-bold text-zinc-300">
+                          {history.previousSessionSets[0].weightKg}kg × {history.previousSessionSets[0].reps}
                         </Text>
                       ) : (
                         <Text className="text-xs text-zinc-500 italic">No history</Text>
