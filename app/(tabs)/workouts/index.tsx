@@ -389,9 +389,12 @@ export default function WorkoutsScreen() {
               </Text>
               <TouchableOpacity
                 onPress={() => setShowAssignModal(true)}
-                className="bg-zinc-800 border border-zinc-700 py-2.5 rounded-xl items-center"
+                className="bg-zinc-800 border border-zinc-700 py-3 px-4 rounded-xl flex-row items-center justify-center space-x-1.5"
               >
-                <Text className="text-xs font-bold text-cyan-400">+ Add Workout to {selectedDay}</Text>
+                <Ionicons name="add-circle-outline" size={16} color="#06B6D4" />
+                <Text className="text-xs font-bold text-cyan-400">
+                  + Add Workout to {selectedDay}
+                </Text>
               </TouchableOpacity>
             </View>
           )}
@@ -400,29 +403,20 @@ export default function WorkoutsScreen() {
 
       {/* 2. ACTIVE SPLIT ROUTINES */}
       <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
-        <View className="flex-row items-center justify-between mb-2">
-          <View className="flex-row items-center space-x-2">
+        <View className="flex-row items-center justify-between mb-3">
+          <View className="flex-row items-center space-x-2 flex-1 mr-2">
             <Ionicons name="flash-outline" size={20} color="#06B6D4" />
-            <Text className="text-sm font-semibold text-accent-cyan uppercase tracking-wider">
+            <Text className="text-sm font-semibold text-accent-cyan uppercase tracking-wider" numberOfLines={1}>
               Active Workout Split
             </Text>
           </View>
-          <View className="flex-row items-center space-x-2">
-            <TouchableOpacity
-              onPress={() => setShowAddExModal(true)}
-              className="flex-row items-center bg-cyan-500/15 border border-cyan-500/50 px-2.5 py-1.5 rounded-lg"
-            >
-              <Ionicons name="add" size={15} color="#06B6D4" />
-              <Text className="text-xs font-bold text-cyan-400 ml-1">+ Exercise</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => router.push('/create-split')}
-              className="flex-row items-center bg-cyan-500/10 border border-cyan-500 px-3 py-1.5 rounded-lg"
-            >
-              <Ionicons name="layers-outline" size={15} color="#06B6D4" />
-              <Text className="text-xs font-bold text-cyan-400 ml-1">New Split</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            onPress={() => router.push('/create-split')}
+            className="flex-row items-center bg-cyan-500/15 border border-cyan-500/60 px-3 py-1.5 rounded-lg"
+          >
+            <Ionicons name="layers-outline" size={15} color="#06B6D4" />
+            <Text className="text-xs font-bold text-cyan-400 ml-1.5">New Split</Text>
+          </TouchableOpacity>
         </View>
 
         {activeSplit ? (
