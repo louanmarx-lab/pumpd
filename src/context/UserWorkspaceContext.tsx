@@ -37,6 +37,7 @@ interface UserWorkspaceContextType {
   // Actions
   switchActiveUser: (userId: string) => void;
   addExercise: (exercise: Omit<Exercise, 'id'>) => Exercise;
+  deleteExercise: (exerciseId: string) => void;
   addSplit: (split: Omit<Split, 'id'>) => Split;
   updateSplit: (split: Split) => void;
   deleteSplit: (splitId: string) => void;
@@ -362,6 +363,10 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     return exercise;
   };
 
+  const deleteExercise = (exerciseId: string) => {
+    setExercises((prev) => prev.filter((e) => e.id !== exerciseId));
+  };
+
   const addSplit = (newSplit: Omit<Split, 'id'>): Split => {
     const split: Split = {
       ...newSplit,
@@ -530,6 +535,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         shiftSplitSchedule,
         switchActiveUser,
         addExercise,
+        deleteExercise,
         addSplit,
         updateSplit,
         deleteSplit,

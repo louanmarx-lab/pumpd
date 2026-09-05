@@ -78,6 +78,7 @@ export default function WorkoutsScreen() {
     updateDaySchedule,
     shiftSplitSchedule,
     addExercise,
+    deleteExercise,
     deleteWorkoutLog,
   } = useUserWorkspace();
 
@@ -85,6 +86,7 @@ export default function WorkoutsScreen() {
   const [selectedDay, setSelectedDay] = useState<DayOfWeek>(todayDay);
 
   const [selectedMuscleGroup, setSelectedMuscleGroup] = useState<MuscleGroup | 'All'>('All');
+  const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
   const [showAddExModal, setShowAddExModal] = useState(false);
   const [newExName, setNewExName] = useState('');
   const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>('Chest');
@@ -131,6 +133,25 @@ export default function WorkoutsScreen() {
     );
   };
 
+  const handleDeleteExercise = (exId: string, exName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      'Delete Custom Exercise',
+      `Are you sure you want to remove "${exName}" from your exercise database?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteExercise(exId);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          },
+        },
+      ]
+    );
+  };
+
   // Filter splits belonging to active user
   const userSplits = splits.filter((s) => s.userId === activeUser.id);
   const activeSplit = userSplits.find((s) => s.isActive) || userSplits[0];
@@ -146,10 +167,16 @@ export default function WorkoutsScreen() {
 
   const isRestDay = selectedDaySchedule.routineId === 'rest';
 
-  // Filter exercises
+  // Filter exercises by muscle group and search query
   const filteredExercises = exercises.filter((ex) => {
-    if (selectedMuscleGroup === 'All') return true;
-    return ex.muscleGroup === selectedMuscleGroup;
+    const matchesMuscle =
+      selectedMuscleGroup === 'All' || ex.muscleGroup === selectedMuscleGroup;
+    const query = exerciseSearchQuery.trim().toLowerCase();
+    const matchesSearch =
+      !query ||
+      ex.name.toLowerCase().includes(query) ||
+      ex.equipment.toLowerCase().includes(query);
+    return matchesMuscle && matchesSearch;
   });
 
   const handleStartWorkout = (routineName: string, exerciseIds: string[]) => {
@@ -182,18 +209,25 @@ export default function WorkoutsScreen() {
 
   const handleCreateExercise = () => {
     if (!newExName.trim()) {
-      Alert.alert('Error', 'Please enter an exercise name.');
+      Alert.alert('Required', 'Please enter an exercise name.');
       return;
     }
-    addExercise({
+    const created = addExercise({
       workspaceId: activeUser.activeWorkspaceId,
       name: newExName.trim(),
       muscleGroup: newExMuscle,
       equipment: newExEquipment.trim() || 'Custom',
     });
     setNewExName('');
+    setNewExEquipment('Barbell');
     setShowAddExModal(false);
+    setSelectedMuscleGroup('All');
+    setExerciseSearchQuery('');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert(
+      'Exercise Created! 🏋️',
+      `"${created.name}" is now saved to your Exercise Database and ready to train or assign to your routines.`
+    );
   };
 
   return (
@@ -373,13 +407,22 @@ export default function WorkoutsScreen() {
               Active Workout Split
             </Text>
           </View>
-          <TouchableOpacity
-            onPress={() => router.push('/create-split')}
-            className="flex-row items-center bg-cyan-500/10 border border-cyan-500 px-3 py-1.5 rounded-lg"
-          >
-            <Ionicons name="add" size={16} color="#06B6D4" />
-            <Text className="text-xs font-bold text-cyan-400 ml-1">New Split</Text>
-          </TouchableOpacity>
+          <View className="flex-row items-center space-x-2">
+            <TouchableOpacity
+              onPress={() => setShowAddExModal(true)}
+              className="flex-row items-center bg-cyan-500/15 border border-cyan-500/50 px-2.5 py-1.5 rounded-lg"
+            >
+              <Ionicons name="add" size={15} color="#06B6D4" />
+              <Text className="text-xs font-bold text-cyan-400 ml-1">+ Exercise</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.push('/create-split')}
+              className="flex-row items-center bg-cyan-500/10 border border-cyan-500 px-3 py-1.5 rounded-lg"
+            >
+              <Ionicons name="layers-outline" size={15} color="#06B6D4" />
+              <Text className="text-xs font-bold text-cyan-400 ml-1">New Split</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {activeSplit ? (
@@ -592,6 +635,23 @@ export default function WorkoutsScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Search Input for Exercises */}
+      <View className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 flex-row items-center space-x-2 mb-3">
+        <Ionicons name="search-outline" size={16} color="#71717A" />
+        <TextInput
+          value={exerciseSearchQuery}
+          onChangeText={setExerciseSearchQuery}
+          placeholder="Search exercises by name or equipment..."
+          placeholderTextColor="#71717A"
+          className="flex-1 text-white text-xs font-medium"
+        />
+        {exerciseSearchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setExerciseSearchQuery('')}>
+            <Ionicons name="close-circle" size={16} color="#71717A" />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* Muscle Group Filter Chips */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4">
         {MUSCLE_GROUPS.map((mg) => {
@@ -623,28 +683,77 @@ export default function WorkoutsScreen() {
 
       {/* Filtered Exercise Cards */}
       <View className="mb-10">
-        {filteredExercises.map((item) => (
-          <View
-            key={item.id}
-            className="bg-dark-card border border-dark-border p-3.5 rounded-xl mb-2.5 flex-row items-center justify-between"
-          >
-            <View className="flex-1 pr-2">
-              <Text className="text-sm font-bold text-white mb-0.5">{item.name}</Text>
-              <View className="flex-row items-center space-x-2">
-                <View className="bg-zinc-800 px-2 py-0.5 rounded">
-                  <Text className="text-[10px] text-zinc-300 font-medium">{item.muscleGroup}</Text>
-                </View>
-                <Text className="text-xs text-zinc-500">• {item.equipment}</Text>
-              </View>
-            </View>
+        {filteredExercises.length === 0 ? (
+          <View className="bg-dark-card border border-dark-border p-6 rounded-2xl items-center">
+            <Ionicons name="barbell-outline" size={32} color="#71717A" />
+            <Text className="text-sm text-zinc-300 font-bold mt-2">No exercises found</Text>
+            <Text className="text-xs text-zinc-500 text-center mt-1 mb-4">
+              {exerciseSearchQuery
+                ? `No exercises matching "${exerciseSearchQuery}".`
+                : 'No exercises for this muscle group.'}
+            </Text>
             <TouchableOpacity
-              onPress={() => handleStartWorkout(item.name, [item.id])}
-              className="bg-zinc-800 border border-cyan-500/40 px-3 py-1.5 rounded-lg"
+              onPress={() => {
+                if (exerciseSearchQuery) {
+                  setNewExName(exerciseSearchQuery);
+                }
+                setShowAddExModal(true);
+              }}
+              className="bg-accent-cyan px-4 py-2 rounded-xl flex-row items-center space-x-1"
             >
-              <Text className="text-xs font-bold text-cyan-400">Train This</Text>
+              <Ionicons name="add-circle" size={16} color="#09090B" />
+              <Text className="text-black font-extrabold text-xs">
+                + Create {exerciseSearchQuery ? `"${exerciseSearchQuery}"` : 'New Exercise'}
+              </Text>
             </TouchableOpacity>
           </View>
-        ))}
+        ) : (
+          filteredExercises.map((item) => {
+            const isCustom = item.id.startsWith('ex_custom');
+            return (
+              <View
+                key={item.id}
+                className="bg-dark-card border border-dark-border p-3.5 rounded-xl mb-2.5 flex-row items-center justify-between"
+              >
+                <View className="flex-1 pr-2">
+                  <View className="flex-row items-center space-x-1.5 mb-0.5">
+                    <Text className="text-sm font-bold text-white">{item.name}</Text>
+                    {isCustom && (
+                      <View className="bg-cyan-950/80 border border-cyan-500/50 px-1.5 py-0.2 rounded">
+                        <Text className="text-[9px] font-bold text-cyan-400 uppercase">Custom</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View className="flex-row items-center space-x-2">
+                    <View className="bg-zinc-800 px-2 py-0.5 rounded">
+                      <Text className="text-[10px] text-zinc-300 font-medium">
+                        {item.muscleGroup}
+                      </Text>
+                    </View>
+                    <Text className="text-xs text-zinc-500">• {item.equipment}</Text>
+                  </View>
+                </View>
+
+                <View className="flex-row items-center space-x-2">
+                  {isCustom && (
+                    <TouchableOpacity
+                      onPress={() => handleDeleteExercise(item.id, item.name)}
+                      className="p-2 bg-zinc-800/80 rounded-lg border border-zinc-700/60"
+                    >
+                      <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    onPress={() => handleStartWorkout(item.name, [item.id])}
+                    className="bg-zinc-800 border border-cyan-500/40 px-3 py-1.5 rounded-lg"
+                  >
+                    <Text className="text-xs font-bold text-cyan-400">Train This</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            );
+          })
+        )}
       </View>
 
       {/* REST & SHIFT SPLIT CONFIRMATION MODAL */}
@@ -747,6 +856,18 @@ export default function WorkoutsScreen() {
                   )}
                 </TouchableOpacity>
               ))}
+
+              {/* Add Custom Exercise Shortcut */}
+              <TouchableOpacity
+                onPress={() => {
+                  setShowAssignModal(false);
+                  setShowAddExModal(true);
+                }}
+                className="p-3 bg-zinc-900/60 border border-dashed border-cyan-500/40 rounded-xl mb-2.5 flex-row items-center justify-center space-x-2"
+              >
+                <Ionicons name="add-circle" size={18} color="#06B6D4" />
+                <Text className="text-xs font-bold text-cyan-400">+ Create New Exercise</Text>
+              </TouchableOpacity>
             </ScrollView>
           </View>
         </View>

@@ -18,10 +18,21 @@ import { useKeepAwake } from 'expo-keep-awake';
 
 import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
 import { HeaderSwitcher } from '../components/HeaderSwitcher';
-import { SetType, SetLog, LoggedExercise, Exercise } from '../src/types';
+import { SetType, SetLog, LoggedExercise, Exercise, MuscleGroup } from '../src/types';
 import { calculate1RM, getExerciseHistory } from '../src/utils/fitness';
 
 const SET_TYPES: SetType[] = ['Normal', 'Warmup', 'Drop', 'Failure'];
+const MUSCLE_GROUPS: MuscleGroup[] = [
+  'Chest',
+  'Back',
+  'Quads',
+  'Hamstrings',
+  'Shoulders',
+  'Biceps',
+  'Triceps',
+  'Calves',
+  'Abs',
+];
 
 export default function ActiveSessionScreen() {
   // Keep screen awake during workout session
@@ -34,7 +45,7 @@ export default function ActiveSessionScreen() {
     exerciseIds?: string;
   }>();
 
-  const { activeUser, activeWorkspace, exercises, workoutLogs, saveWorkoutLog } =
+  const { activeUser, activeWorkspace, exercises, workoutLogs, saveWorkoutLog, addExercise } =
     useUserWorkspace();
 
   const routineTitle = params.routineName || 'Gym Workout Session';
@@ -44,6 +55,14 @@ export default function ActiveSessionScreen() {
   const [sessionExercises, setSessionExercises] = useState<LoggedExercise[]>([]);
   const [showSwapModal, setShowSwapModal] = useState(false);
   const [swapTargetIndex, setSwapTargetIndex] = useState<number | null>(null);
+
+  // Add Exercise & Create Custom Exercise state
+  const [showAddExerciseModal, setShowAddExerciseModal] = useState(false);
+  const [showCreateExerciseModal, setShowCreateExerciseModal] = useState(false);
+  const [exerciseSearchQuery, setExerciseSearchQuery] = useState('');
+  const [newExName, setNewExName] = useState('');
+  const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>('Chest');
+  const [newExEquipment, setNewExEquipment] = useState('Barbell');
 
   // Active workout timer (starts automatically on mount, stops on finish)
   const [secondsElapsed, setSecondsElapsed] = useState<number>(0);
@@ -161,6 +180,45 @@ export default function ActiveSessionScreen() {
     });
     setShowSwapModal(false);
     setSwapTargetIndex(null);
+  };
+
+  const handleAddExerciseToSession = (ex: Exercise) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const newLoggedEx: LoggedExercise = {
+      exerciseId: ex.id,
+      exerciseName: ex.name,
+      sets: [
+        { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
+        { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
+        { setNumber: 3, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
+      ],
+    };
+    setSessionExercises((prev) => [...prev, newLoggedEx]);
+    setShowAddExerciseModal(false);
+    setExerciseSearchQuery('');
+  };
+
+  const handleCreateAndAddExercise = () => {
+    if (!newExName.trim()) {
+      Alert.alert('Required', 'Please enter an exercise name.');
+      return;
+    }
+    const created = addExercise({
+      workspaceId: activeWorkspace.id,
+      name: newExName.trim(),
+      muscleGroup: newExMuscle,
+      equipment: newExEquipment.trim() || 'Custom',
+    });
+    setNewExName('');
+    setNewExEquipment('Barbell');
+    setShowCreateExerciseModal(false);
+
+    if (swapTargetIndex !== null) {
+      handleSwapExercise(created);
+    } else {
+      handleAddExerciseToSession(created);
+    }
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
   const handleFinishWorkout = () => {
@@ -438,35 +496,219 @@ export default function ActiveSessionScreen() {
               </View>
             );
           })}
+
+          {/* Add Exercise to Workout Session Button */}
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => {
+              setExerciseSearchQuery('');
+              setShowAddExerciseModal(true);
+            }}
+            className="bg-accent-cyan p-4 rounded-2xl mb-8 flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/25"
+          >
+            <Ionicons name="add-circle" size={22} color="#09090B" />
+            <Text className="text-black font-extrabold text-base">+ Add Exercise to Workout</Text>
+          </TouchableOpacity>
         </ScrollView>
 
         {/* Swap Exercise Modal */}
         <Modal visible={showSwapModal} transparent animationType="slide">
           <View className="flex-1 bg-black/80 justify-end">
-            <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5 max-h-[80%]">
-              <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-3">
+            <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5 max-h-[85%]">
+              <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-3">
                 <Text className="text-lg font-bold text-white">Swap Exercise</Text>
                 <TouchableOpacity onPress={() => setShowSwapModal(false)}>
                   <Ionicons name="close" size={24} color="#A1A1AA" />
                 </TouchableOpacity>
               </View>
+
+              {/* Create New Exercise Shortcut */}
+              <TouchableOpacity
+                onPress={() => {
+                  setShowSwapModal(false);
+                  setShowCreateExerciseModal(true);
+                }}
+                className="bg-cyan-500/15 border border-dashed border-cyan-500/60 p-3 rounded-xl mb-3 flex-row items-center justify-center space-x-2"
+              >
+                <Ionicons name="add-circle" size={18} color="#06B6D4" />
+                <Text className="text-xs font-bold text-cyan-400">+ Create Brand New Exercise</Text>
+              </TouchableOpacity>
+
+              {/* Search Bar */}
+              <View className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 flex-row items-center space-x-2 mb-3">
+                <Ionicons name="search-outline" size={16} color="#71717A" />
+                <TextInput
+                  value={exerciseSearchQuery}
+                  onChangeText={setExerciseSearchQuery}
+                  placeholder="Search exercise to swap with..."
+                  placeholderTextColor="#71717A"
+                  className="flex-1 text-white text-xs font-medium"
+                />
+                {exerciseSearchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => setExerciseSearchQuery('')}>
+                    <Ionicons name="close-circle" size={16} color="#71717A" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
               <ScrollView className="mb-4">
-                {exercises.map((ex) => (
+                {exercises
+                  .filter(
+                    (ex) =>
+                      !exerciseSearchQuery.trim() ||
+                      ex.name.toLowerCase().includes(exerciseSearchQuery.toLowerCase()) ||
+                      ex.muscleGroup.toLowerCase().includes(exerciseSearchQuery.toLowerCase())
+                  )
+                  .map((ex) => (
+                    <TouchableOpacity
+                      key={ex.id}
+                      onPress={() => handleSwapExercise(ex)}
+                      className="p-3.5 bg-zinc-900 border border-zinc-800 rounded-xl mb-2 flex-row items-center justify-between"
+                    >
+                      <View>
+                        <Text className="text-sm font-bold text-white">{ex.name}</Text>
+                        <Text className="text-xs text-zinc-400">
+                          {ex.muscleGroup} • {ex.equipment}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color="#06B6D4" />
+                    </TouchableOpacity>
+                  ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Add Exercise to Workout Modal */}
+        <Modal visible={showAddExerciseModal} transparent animationType="slide">
+          <View className="flex-1 bg-black/80 justify-end">
+            <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5 max-h-[85%]">
+              <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-3">
+                <Text className="text-lg font-bold text-white">Add Exercise to Workout</Text>
+                <TouchableOpacity onPress={() => setShowAddExerciseModal(false)}>
+                  <Ionicons name="close" size={24} color="#A1A1AA" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Create New Exercise Shortcut */}
+              <TouchableOpacity
+                onPress={() => {
+                  setShowAddExerciseModal(false);
+                  setSwapTargetIndex(null);
+                  setShowCreateExerciseModal(true);
+                }}
+                className="bg-cyan-500/15 border border-dashed border-cyan-500/60 p-3 rounded-xl mb-3 flex-row items-center justify-center space-x-2"
+              >
+                <Ionicons name="add-circle" size={18} color="#06B6D4" />
+                <Text className="text-xs font-bold text-cyan-400">+ Create Brand New Exercise</Text>
+              </TouchableOpacity>
+
+              {/* Search Bar */}
+              <View className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2.5 flex-row items-center space-x-2 mb-3">
+                <Ionicons name="search-outline" size={16} color="#71717A" />
+                <TextInput
+                  value={exerciseSearchQuery}
+                  onChangeText={setExerciseSearchQuery}
+                  placeholder="Search exercises by name..."
+                  placeholderTextColor="#71717A"
+                  className="flex-1 text-white text-xs font-medium"
+                />
+                {exerciseSearchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => setExerciseSearchQuery('')}>
+                    <Ionicons name="close-circle" size={16} color="#71717A" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <ScrollView className="mb-4">
+                {exercises
+                  .filter(
+                    (ex) =>
+                      !exerciseSearchQuery.trim() ||
+                      ex.name.toLowerCase().includes(exerciseSearchQuery.toLowerCase()) ||
+                      ex.muscleGroup.toLowerCase().includes(exerciseSearchQuery.toLowerCase())
+                  )
+                  .map((ex) => (
+                    <TouchableOpacity
+                      key={ex.id}
+                      onPress={() => handleAddExerciseToSession(ex)}
+                      className="p-3.5 bg-zinc-900 border border-zinc-800 rounded-xl mb-2 flex-row items-center justify-between"
+                    >
+                      <View>
+                        <Text className="text-sm font-bold text-white">{ex.name}</Text>
+                        <Text className="text-xs text-zinc-400">
+                          {ex.muscleGroup} • {ex.equipment}
+                        </Text>
+                      </View>
+                      <View className="bg-cyan-500/20 border border-cyan-500/60 px-3 py-1.5 rounded-lg">
+                        <Text className="text-xs font-bold text-cyan-400">+ Add</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Create Custom Exercise Modal */}
+        <Modal visible={showCreateExerciseModal} transparent animationType="slide">
+          <View className="flex-1 bg-black/85 justify-center px-4">
+            <View className="bg-dark-card border border-zinc-800 p-5 rounded-2xl">
+              <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-2">
+                <Text className="text-lg font-bold text-white">Create New Exercise</Text>
+                <TouchableOpacity onPress={() => setShowCreateExerciseModal(false)}>
+                  <Ionicons name="close" size={24} color="#A1A1AA" />
+                </TouchableOpacity>
+              </View>
+
+              <Text className="text-xs text-zinc-400 mb-1">Exercise Name</Text>
+              <TextInput
+                value={newExName}
+                onChangeText={setNewExName}
+                placeholder="e.g. Incline Smith Machine Press"
+                placeholderTextColor="#71717A"
+                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl mb-4 font-bold"
+              />
+
+              <Text className="text-xs text-zinc-400 mb-1">Primary Muscle Group</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4">
+                {MUSCLE_GROUPS.map((mg) => (
                   <TouchableOpacity
-                    key={ex.id}
-                    onPress={() => handleSwapExercise(ex)}
-                    className="p-3.5 bg-zinc-900 border border-zinc-800 rounded-xl mb-2 flex-row items-center justify-between"
+                    key={mg}
+                    onPress={() => setNewExMuscle(mg)}
+                    className={`px-3 py-1.5 rounded-lg mr-2 border ${
+                      newExMuscle === mg
+                        ? 'bg-accent-cyan border-cyan-400'
+                        : 'bg-zinc-900 border-zinc-800'
+                    }`}
                   >
-                    <View>
-                      <Text className="text-sm font-bold text-white">{ex.name}</Text>
-                      <Text className="text-xs text-zinc-400">
-                        {ex.muscleGroup} • {ex.equipment}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color="#06B6D4" />
+                    <Text
+                      className={`text-xs font-semibold ${
+                        newExMuscle === mg ? 'text-black font-bold' : 'text-white'
+                      }`}
+                    >
+                      {mg}
+                    </Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
+
+              <Text className="text-xs text-zinc-400 mb-1">Equipment</Text>
+              <TextInput
+                value={newExEquipment}
+                onChangeText={setNewExEquipment}
+                placeholder="e.g. Dumbbell / Cable / Machine"
+                placeholderTextColor="#71717A"
+                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl mb-6"
+              />
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={handleCreateAndAddExercise}
+                className="bg-accent-cyan p-4 rounded-xl items-center shadow-lg shadow-cyan-500/20"
+              >
+                <Text className="text-black font-extrabold text-base">Save & Add to Workout</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>
