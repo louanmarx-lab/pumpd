@@ -45,14 +45,55 @@ export default function ActiveSessionScreen() {
     exerciseIds?: string;
   }>();
 
-  const { activeUser, activeWorkspace, exercises, workoutLogs, saveWorkoutLog, addExercise } =
-    useUserWorkspace();
+  const {
+    currentUser,
+    partnerUser,
+    activeUser,
+    activeWorkspace,
+    exercises,
+    workoutLogs,
+    saveWorkoutLog,
+    addExercise,
+    switchActiveUser,
+  } = useUserWorkspace();
 
   const routineTitle = params.routineName || 'Gym Workout Session';
   const initialIds: string[] = params.exerciseIds ? JSON.parse(params.exerciseIds) : ['ex_1'];
 
-  // Local workout session state
-  const [sessionExercises, setSessionExercises] = useState<LoggedExercise[]>([]);
+  // Helper to build initial exercises for a specific user using their own benchmark history
+  const buildInitialExercisesForUser = (userId: string): LoggedExercise[] => {
+    const userLogs = workoutLogs.filter((l) => l.userId === userId);
+    return initialIds.map((id) => {
+      const exDef = exercises.find((e) => e.id === id);
+      const history = getExerciseHistory(userLogs, id);
+
+      let defaultSets: SetLog[] = [];
+      if (history.previousSessionSets && history.previousSessionSets.length > 0) {
+        defaultSets = history.previousSessionSets.map((s, idx) => ({
+          setNumber: idx + 1,
+          type: s.type,
+          weightKg: s.weightKg,
+          reps: s.reps,
+          isCompleted: false,
+        }));
+      } else {
+        defaultSets = [
+          { setNumber: 1, type: 'Warmup', weightKg: 30, reps: 10, isCompleted: false },
+          { setNumber: 2, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
+          { setNumber: 3, type: 'Normal', weightKg: 55, reps: 6, isCompleted: false },
+        ];
+      }
+
+      return {
+        exerciseId: id,
+        exerciseName: exDef ? exDef.name : 'Exercise',
+        sets: defaultSets,
+      };
+    });
+  };
+
+  // Independent workout session state per user: { [userId]: LoggedExercise[] }
+  const [userExercisesMap, setUserExercisesMap] = useState<Record<string, LoggedExercise[]>>({});
   const [showSwapModal, setShowSwapModal] = useState(false);
   const [swapTargetIndex, setSwapTargetIndex] = useState<number | null>(null);
 
@@ -87,43 +128,48 @@ export default function ActiveSessionScreen() {
     return `${pad(mins)}:${pad(secs)}`;
   };
 
-  // Initialize session exercise cards
+  // Initialize independent session exercise cards for both users
   useEffect(() => {
-    const initialList: LoggedExercise[] = initialIds.map((id) => {
-      const exDef = exercises.find((e) => e.id === id);
-      return {
-        exerciseId: id,
-        exerciseName: exDef ? exDef.name : 'Barbell Bench Press',
-        sets: [
-          { setNumber: 1, type: 'Warmup', weightKg: 40, reps: 10, isCompleted: false },
-          { setNumber: 2, type: 'Normal', weightKg: 70, reps: 8, isCompleted: false },
-          { setNumber: 3, type: 'Normal', weightKg: 75, reps: 6, isCompleted: false },
-        ],
-      };
-    });
-    setSessionExercises(initialList);
+    const initialMap: Record<string, LoggedExercise[]> = {
+      [currentUser.id]: buildInitialExercisesForUser(currentUser.id),
+    };
+    if (partnerUser) {
+      initialMap[partnerUser.id] = buildInitialExercisesForUser(partnerUser.id);
+    }
+    setUserExercisesMap(initialMap);
   }, []);
 
-  // Set mutation functions
+  // Get current active user's exercises
+  const currentSessionExercises: LoggedExercise[] =
+    userExercisesMap[activeUser.id] || buildInitialExercisesForUser(activeUser.id);
+
+  const getCompletedCountForUser = (userId: string): number => {
+    const list = userExercisesMap[userId] || [];
+    return list.reduce((acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length, 0);
+  };
+
+  // Set mutation functions for active user ONLY
   const handleUpdateSet = (
     exIndex: number,
     setIndex: number,
     field: keyof SetLog,
     value: any
   ) => {
-    setSessionExercises((prev) => {
-      const updated = [...prev];
-      const ex = { ...updated[exIndex] };
+    setUserExercisesMap((prev) => {
+      const currentList = prev[activeUser.id]
+        ? [...prev[activeUser.id]]
+        : [...buildInitialExercisesForUser(activeUser.id)];
+      const ex = { ...currentList[exIndex] };
       const sets = [...ex.sets];
       sets[setIndex] = { ...sets[setIndex], [field]: value };
       ex.sets = sets;
-      updated[exIndex] = ex;
-      return updated;
+      currentList[exIndex] = ex;
+      return { ...prev, [activeUser.id]: currentList };
     });
   };
 
   const handleToggleComplete = (exIndex: number, setIndex: number) => {
-    const currentCompleted = sessionExercises[exIndex].sets[setIndex].isCompleted;
+    const currentCompleted = currentSessionExercises[exIndex]?.sets[setIndex]?.isCompleted || false;
     if (!currentCompleted) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } else {
@@ -134,9 +180,11 @@ export default function ActiveSessionScreen() {
 
   const handleAddSet = (exIndex: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSessionExercises((prev) => {
-      const updated = [...prev];
-      const ex = { ...updated[exIndex] };
+    setUserExercisesMap((prev) => {
+      const currentList = prev[activeUser.id]
+        ? [...prev[activeUser.id]]
+        : [...buildInitialExercisesForUser(activeUser.id)];
+      const ex = { ...currentList[exIndex] };
       const lastSet = ex.sets[ex.sets.length - 1];
       const newSet: SetLog = {
         setNumber: ex.sets.length + 1,
@@ -146,37 +194,45 @@ export default function ActiveSessionScreen() {
         isCompleted: false,
       };
       ex.sets = [...ex.sets, newSet];
-      updated[exIndex] = ex;
-      return updated;
+      currentList[exIndex] = ex;
+      return { ...prev, [activeUser.id]: currentList };
     });
   };
 
   const handleRemoveSet = (exIndex: number, setIndex: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSessionExercises((prev) => {
-      const updated = [...prev];
-      const ex = { ...updated[exIndex] };
+    setUserExercisesMap((prev) => {
+      const currentList = prev[activeUser.id]
+        ? [...prev[activeUser.id]]
+        : [...buildInitialExercisesForUser(activeUser.id)];
+      const ex = { ...currentList[exIndex] };
       if (ex.sets.length <= 1) return prev;
       const filtered = ex.sets.filter((_, idx) => idx !== setIndex);
       ex.sets = filtered.map((s, i) => ({ ...s, setNumber: i + 1 }));
-      updated[exIndex] = ex;
-      return updated;
+      currentList[exIndex] = ex;
+      return { ...prev, [activeUser.id]: currentList };
     });
   };
 
   const handleSwapExercise = (newEx: Exercise) => {
     if (swapTargetIndex === null) return;
-    setSessionExercises((prev) => {
-      const updated = [...prev];
-      updated[swapTargetIndex] = {
-        exerciseId: newEx.id,
-        exerciseName: newEx.name,
-        sets: [
-          { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
-          { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
-        ],
-      };
-      return updated;
+    setUserExercisesMap((prev) => {
+      const nextMap = { ...prev };
+      Object.keys(nextMap).forEach((uId) => {
+        const list = [...nextMap[uId]];
+        if (list[swapTargetIndex]) {
+          list[swapTargetIndex] = {
+            exerciseId: newEx.id,
+            exerciseName: newEx.name,
+            sets: [
+              { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
+              { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
+            ],
+          };
+          nextMap[uId] = list;
+        }
+      });
+      return nextMap;
     });
     setShowSwapModal(false);
     setSwapTargetIndex(null);
@@ -184,16 +240,27 @@ export default function ActiveSessionScreen() {
 
   const handleAddExerciseToSession = (ex: Exercise) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const newLoggedEx: LoggedExercise = {
-      exerciseId: ex.id,
-      exerciseName: ex.name,
-      sets: [
-        { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
-        { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
-        { setNumber: 3, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
-      ],
-    };
-    setSessionExercises((prev) => [...prev, newLoggedEx]);
+    setUserExercisesMap((prev) => {
+      const nextMap = { ...prev };
+      const userIds = Object.keys(nextMap);
+      if (!userIds.includes(currentUser.id)) userIds.push(currentUser.id);
+      if (partnerUser && !userIds.includes(partnerUser.id)) userIds.push(partnerUser.id);
+
+      userIds.forEach((uId) => {
+        const userList = nextMap[uId] ? [...nextMap[uId]] : buildInitialExercisesForUser(uId);
+        const newLoggedEx: LoggedExercise = {
+          exerciseId: ex.id,
+          exerciseName: ex.name,
+          sets: [
+            { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
+            { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
+            { setNumber: 3, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
+          ],
+        };
+        nextMap[uId] = [...userList, newLoggedEx];
+      });
+      return nextMap;
+    });
     setShowAddExerciseModal(false);
     setExerciseSearchQuery('');
   };
@@ -222,13 +289,25 @@ export default function ActiveSessionScreen() {
   };
 
   const handleFinishWorkout = () => {
-    // Check completed sets
-    const totalCompletedSets = sessionExercises.reduce(
-      (acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length,
-      0
-    );
+    const userIds = [currentUser.id];
+    if (partnerUser) userIds.push(partnerUser.id);
 
-    if (totalCompletedSets === 0) {
+    const completedByUser: Record<string, number> = {};
+    const exercisesByUser: Record<string, LoggedExercise[]> = {};
+
+    userIds.forEach((uId) => {
+      const exList = userExercisesMap[uId] || [];
+      const completed = exList.reduce(
+        (acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length,
+        0
+      );
+      completedByUser[uId] = completed;
+      exercisesByUser[uId] = exList;
+    });
+
+    const totalCompletedAll = Object.values(completedByUser).reduce((a, b) => a + b, 0);
+
+    if (totalCompletedAll === 0) {
       Alert.alert(
         'Empty Session',
         'Please complete at least one set before finishing the workout.',
@@ -238,25 +317,33 @@ export default function ActiveSessionScreen() {
     }
 
     const todayDate = new Date().toISOString().split('T')[0];
-
-    // Stop timer
     setIsTimerRunning(false);
 
-    saveWorkoutLog({
-      userId: activeUser.id,
-      workspaceId: activeWorkspace.id,
-      splitId: params.splitId || 'split_custom',
-      routineName: routineTitle,
-      date: todayDate,
-      timestamp: Date.now(),
-      durationSeconds: secondsElapsed,
-      exercises: sessionExercises,
+    const savedSummaries: string[] = [];
+
+    userIds.forEach((uId) => {
+      if (completedByUser[uId] > 0) {
+        const profile = uId === currentUser.id ? currentUser : partnerUser;
+        saveWorkoutLog({
+          userId: uId,
+          workspaceId: activeWorkspace.id,
+          splitId: params.splitId || 'split_custom',
+          routineName: routineTitle,
+          date: todayDate,
+          timestamp: Date.now(),
+          durationSeconds: secondsElapsed,
+          exercises: exercisesByUser[uId],
+        });
+        if (profile) {
+          savedSummaries.push(`${profile.displayName} (${completedByUser[uId]} sets)`);
+        }
+      }
     });
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert(
       'Workout Complete! 💪',
-      `Logged ${totalCompletedSets} sets in ${formatDuration(secondsElapsed)} for ${activeUser.displayName}.`,
+      `Logged workout in ${formatDuration(secondsElapsed)} for:\n• ${savedSummaries.join('\n• ')}`,
       [{ text: 'Great Job!', onPress: () => router.back() }]
     );
   };
@@ -302,12 +389,81 @@ export default function ActiveSessionScreen() {
           </View>
         </View>
 
+        {/* Partner Duo Turn Bar */}
+        {partnerUser && (
+          <View className="bg-zinc-900 border-b border-zinc-800 px-3 py-2 flex-row items-center justify-between">
+            <View className="flex-row items-center space-x-1.5">
+              <Ionicons name="barbell" size={14} color="#06B6D4" />
+              <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
+                Whose Turn:
+              </Text>
+            </View>
+
+            <View className="flex-row bg-zinc-950 p-0.5 rounded-xl border border-zinc-800">
+              <TouchableOpacity
+                onPress={() => {
+                  if (activeUser.id !== currentUser.id) {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    switchActiveUser(currentUser.id);
+                  }
+                }}
+                className={`flex-row items-center px-3 py-1.5 rounded-lg ${
+                  activeUser.id === currentUser.id ? 'bg-cyan-500' : 'bg-transparent'
+                }`}
+              >
+                <Ionicons
+                  name="person"
+                  size={12}
+                  color={activeUser.id === currentUser.id ? '#000000' : '#71717A'}
+                />
+                <Text
+                  className={`text-xs ml-1.5 ${
+                    activeUser.id === currentUser.id
+                      ? 'text-black font-extrabold'
+                      : 'text-zinc-400 font-semibold'
+                  }`}
+                >
+                  {currentUser.displayName.split(' ')[0]} ({getCompletedCountForUser(currentUser.id)} sets)
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  if (activeUser.id !== partnerUser.id) {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    switchActiveUser(partnerUser.id);
+                  }
+                }}
+                className={`flex-row items-center px-3 py-1.5 rounded-lg ${
+                  activeUser.id === partnerUser.id ? 'bg-purple-500' : 'bg-transparent'
+                }`}
+              >
+                <Ionicons
+                  name="person"
+                  size={12}
+                  color={activeUser.id === partnerUser.id ? '#FFFFFF' : '#71717A'}
+                />
+                <Text
+                  className={`text-xs ml-1.5 ${
+                    activeUser.id === partnerUser.id
+                      ? 'text-white font-extrabold'
+                      : 'text-zinc-400 font-semibold'
+                  }`}
+                >
+                  {partnerUser.displayName.split(' ')[0]} ({getCompletedCountForUser(partnerUser.id)} sets)
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Scrollable Exercise Cards */}
         <ScrollView className="flex-1 px-3 py-4" showsVerticalScrollIndicator={false}>
-          {sessionExercises.map((exItem, exIdx) => {
+          {currentSessionExercises.map((exItem, exIdx) => {
             // Find current user's history for this exercise
             const firstSetWeight = exItem.sets[0]?.weightKg || 0;
-            const history = getExerciseHistory(workoutLogs, exItem.exerciseId, firstSetWeight);
+            const userLogs = workoutLogs.filter((l) => l.userId === activeUser.id);
+            const history = getExerciseHistory(userLogs, exItem.exerciseId, firstSetWeight);
 
             return (
               <View
@@ -318,12 +474,26 @@ export default function ActiveSessionScreen() {
                 <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-2.5">
                   <View className="flex-1 pr-2">
                     <Text className="text-lg font-bold text-white">{exItem.exerciseName}</Text>
-                    <Text className="text-xs text-zinc-400">
-                      Persona:{' '}
-                      <Text className="text-accent-orange font-semibold">
-                        {activeUser.displayName}
-                      </Text>
-                    </Text>
+                    <View className="flex-row items-center mt-0.5">
+                      <Text className="text-xs text-zinc-400">Lifter: </Text>
+                      <View
+                        className={`px-2 py-0.5 rounded-full ${
+                          partnerUser && activeUser.id === partnerUser.id
+                            ? 'bg-purple-500/20 border border-purple-500/50'
+                            : 'bg-cyan-500/20 border border-cyan-500/50'
+                        }`}
+                      >
+                        <Text
+                          className={`text-[11px] font-bold ${
+                            partnerUser && activeUser.id === partnerUser.id
+                              ? 'text-purple-300'
+                              : 'text-cyan-300'
+                          }`}
+                        >
+                          {activeUser.displayName}
+                        </Text>
+                      </View>
+                    </View>
                   </View>
                   <TouchableOpacity
                     onPress={() => {
