@@ -80,7 +80,12 @@ export default function WorkoutsScreen() {
     addExercise,
     deleteExercise,
     deleteWorkoutLog,
+    updateSplit,
+    deleteSplit,
   } = useUserWorkspace();
+
+  type WorkoutViewTab = 'schedule' | 'splits' | 'exercises';
+  const [activeTab, setActiveTab] = useState<WorkoutViewTab>('schedule');
 
   const todayDay = getTodayDayOfWeek();
   const [selectedDay, setSelectedDay] = useState<DayOfWeek>(todayDay);
@@ -231,13 +236,99 @@ export default function WorkoutsScreen() {
   };
 
   return (
-    <ScrollView
-      className="flex-1 bg-dark-bg px-4 py-4"
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ paddingBottom: 40 }}
-    >
-      {/* 1. WEEKLY MONDAY-TO-SUNDAY STRIP */}
-      <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-5 shadow-md">
+    <View className="flex-1 bg-dark-bg">
+      {/* Top Header Segmented Switcher */}
+      <View className="bg-dark-bg px-4 pt-2.5 pb-2 border-b border-zinc-900">
+        <View className="flex-row bg-zinc-900 p-1 rounded-2xl border border-zinc-800">
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setActiveTab('schedule');
+            }}
+            className={`flex-1 py-2 rounded-xl flex-row items-center justify-center space-x-1.5 ${
+              activeTab === 'schedule' ? 'bg-cyan-500 shadow-sm' : 'bg-transparent'
+            }`}
+          >
+            <Ionicons
+              name="calendar"
+              size={13}
+              color={activeTab === 'schedule' ? '#000000' : '#A1A1AA'}
+            />
+            <Text
+              className={`text-xs ${
+                activeTab === 'schedule'
+                  ? 'text-black font-extrabold'
+                  : 'text-zinc-400 font-semibold'
+              }`}
+            >
+              Schedule
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setActiveTab('splits');
+            }}
+            className={`flex-1 py-2 rounded-xl flex-row items-center justify-center space-x-1.5 ${
+              activeTab === 'splits' ? 'bg-cyan-500 shadow-sm' : 'bg-transparent'
+            }`}
+          >
+            <Ionicons
+              name="flash"
+              size={13}
+              color={activeTab === 'splits' ? '#000000' : '#A1A1AA'}
+            />
+            <Text
+              className={`text-xs ${
+                activeTab === 'splits'
+                  ? 'text-black font-extrabold'
+                  : 'text-zinc-400 font-semibold'
+              }`}
+            >
+              Active Split
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setActiveTab('exercises');
+            }}
+            className={`flex-1 py-2 rounded-xl flex-row items-center justify-center space-x-1.5 ${
+              activeTab === 'exercises' ? 'bg-cyan-500 shadow-sm' : 'bg-transparent'
+            }`}
+          >
+            <Ionicons
+              name="barbell"
+              size={13}
+              color={activeTab === 'exercises' ? '#000000' : '#A1A1AA'}
+            />
+            <Text
+              className={`text-xs ${
+                activeTab === 'exercises'
+                  ? 'text-black font-extrabold'
+                  : 'text-zinc-400 font-semibold'
+              }`}
+            >
+              Exercises
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView
+        className="flex-1 bg-dark-bg px-4 py-4"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
+      >
+        {activeTab === 'schedule' && (
+          <>
+            {/* 1. WEEKLY MONDAY-TO-SUNDAY STRIP */}
+            <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-5 shadow-md">
         <View className="flex-row items-center justify-between mb-3">
           <View className="flex-row items-center space-x-2">
             <Ionicons name="calendar" size={18} color="#06B6D4" />
@@ -401,67 +492,6 @@ export default function WorkoutsScreen() {
         </View>
       </View>
 
-      {/* 2. ACTIVE SPLIT ROUTINES */}
-      <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
-        <View className="flex-row items-center justify-between mb-3">
-          <View className="flex-row items-center space-x-2 flex-1 mr-2">
-            <Ionicons name="flash-outline" size={20} color="#06B6D4" />
-            <Text className="text-sm font-semibold text-accent-cyan uppercase tracking-wider" numberOfLines={1}>
-              Active Workout Split
-            </Text>
-          </View>
-          <TouchableOpacity
-            onPress={() => router.push('/create-split')}
-            className="flex-row items-center bg-cyan-500/15 border border-cyan-500/60 px-3 py-1.5 rounded-lg"
-          >
-            <Ionicons name="layers-outline" size={15} color="#06B6D4" />
-            <Text className="text-xs font-bold text-cyan-400 ml-1.5">New Split</Text>
-          </TouchableOpacity>
-        </View>
-
-        {activeSplit ? (
-          <View>
-            <Text className="text-xl font-bold text-white mb-2">{activeSplit.name}</Text>
-            <Text className="text-xs text-zinc-400 mb-3">
-              Routines configured for {activeUser.displayName}:
-            </Text>
-
-            {activeSplit.routines.map((routine) => (
-              <View
-                key={routine.id}
-                className="bg-dark-bg border border-zinc-800 p-3.5 rounded-xl mb-3 flex-row items-center justify-between"
-              >
-                <View className="flex-1 pr-3">
-                  <Text className="text-base font-bold text-white mb-1">{routine.name}</Text>
-                  <Text className="text-xs text-zinc-400">
-                    {routine.exerciseIds.length} Exercises included
-                  </Text>
-                </View>
-
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => handleStartWorkout(routine.name, routine.exerciseIds)}
-                  className="bg-accent-cyan px-4 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-sm"
-                >
-                  <Ionicons name="play" size={16} color="#09090B" />
-                  <Text className="text-black font-extrabold text-xs">Start</Text>
-                </TouchableOpacity>
-              </View>
-            ))}
-          </View>
-        ) : (
-          <View className="py-4 items-center">
-            <Text className="text-sm text-zinc-400 mb-3">No active split set for {activeUser.displayName}.</Text>
-            <TouchableOpacity
-              onPress={() => router.push('/create-split')}
-              className="bg-accent-cyan px-4 py-2.5 rounded-xl"
-            >
-              <Text className="text-black font-bold text-sm">Create First Split</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
-
       {/* 3. QUICK FREE TRAINING SESSION */}
       <TouchableOpacity
         activeOpacity={0.85}
@@ -613,7 +643,121 @@ export default function WorkoutsScreen() {
           </>
         )}
       </View>
+    </>
+  )}
 
+  {/* TAB 2: ACTIVE SPLIT */}
+  {activeTab === 'splits' && (
+    <View>
+      {/* 2. ACTIVE SPLIT ROUTINES */}
+      <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
+        <View className="flex-row items-center justify-between mb-3">
+          <View className="flex-row items-center space-x-2 flex-1 mr-2">
+            <Ionicons name="flash-outline" size={20} color="#06B6D4" />
+            <Text className="text-sm font-semibold text-accent-cyan uppercase tracking-wider" numberOfLines={1}>
+              Active Workout Split
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => router.push('/create-split')}
+            className="flex-row items-center bg-cyan-500/15 border border-cyan-500/60 px-3 py-1.5 rounded-lg"
+          >
+            <Ionicons name="layers-outline" size={15} color="#06B6D4" />
+            <Text className="text-xs font-bold text-cyan-400 ml-1.5">New Split</Text>
+          </TouchableOpacity>
+        </View>
+
+        {activeSplit ? (
+          <View>
+            <Text className="text-xl font-bold text-white mb-2">{activeSplit.name}</Text>
+            <Text className="text-xs text-zinc-400 mb-3">
+              Routines configured for {activeUser.displayName}:
+            </Text>
+
+            {activeSplit.routines.map((routine) => (
+              <View
+                key={routine.id}
+                className="bg-dark-bg border border-zinc-800 p-3.5 rounded-xl mb-3 flex-row items-center justify-between"
+              >
+                <View className="flex-1 pr-3">
+                  <Text className="text-base font-bold text-white mb-1">{routine.name}</Text>
+                  <Text className="text-xs text-zinc-400">
+                    {routine.exerciseIds.length} Exercises included
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => handleStartWorkout(routine.name, routine.exerciseIds)}
+                  className="bg-accent-cyan px-4 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-sm"
+                >
+                  <Ionicons name="play" size={16} color="#09090B" />
+                  <Text className="text-black font-extrabold text-xs">Start</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View className="py-4 items-center">
+            <Text className="text-sm text-zinc-400 mb-3">No active split set for {activeUser.displayName}.</Text>
+            <TouchableOpacity
+              onPress={() => router.push('/create-split')}
+              className="bg-accent-cyan px-4 py-2.5 rounded-xl"
+            >
+              <Text className="text-black font-bold text-sm">Create First Split</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+
+      {/* All Saved Splits list if more than 1 */}
+      {userSplits.length > 1 && (
+        <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
+          <Text className="text-xs text-zinc-400 font-bold uppercase tracking-wider mb-3">
+            All Saved Splits ({userSplits.length})
+          </Text>
+          {userSplits.map((split) => {
+            const isCurrentActive = split.id === activeSplit?.id;
+            return (
+              <View
+                key={split.id}
+                className="bg-dark-bg border border-zinc-800 p-3.5 rounded-xl mb-2.5 flex-row items-center justify-between"
+              >
+                <View className="flex-1 pr-2">
+                  <View className="flex-row items-center space-x-2">
+                    <Text className="text-sm font-bold text-white">{split.name}</Text>
+                    {isCurrentActive && (
+                      <View className="bg-cyan-500/20 border border-cyan-400 px-1.5 py-0.5 rounded">
+                        <Text className="text-[9px] font-bold text-cyan-400">ACTIVE</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text className="text-xs text-zinc-400 mt-0.5">
+                    {split.routines.length} routines configured
+                  </Text>
+                </View>
+                {!isCurrentActive && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      updateSplit({ ...split, isActive: true });
+                    }}
+                    className="bg-cyan-500/20 border border-cyan-500 px-3 py-1.5 rounded-lg"
+                  >
+                    <Text className="text-xs font-bold text-cyan-400">Set Active</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  )}
+
+  {/* TAB 3: EXERCISE DATABASE */}
+  {activeTab === 'exercises' && (
+    <View>
       {/* 5. EXERCISE DATABASE HEADER & FILTER */}
       <View className="flex-row items-center justify-between mb-3">
         <View className="flex-row items-center space-x-2">
@@ -749,6 +893,8 @@ export default function WorkoutsScreen() {
           })
         )}
       </View>
+    </View>
+  )}
 
       {/* REST & SHIFT SPLIT CONFIRMATION MODAL */}
       <Modal visible={showShiftModal} transparent animationType="fade">
@@ -1103,5 +1249,6 @@ export default function WorkoutsScreen() {
         </SafeAreaView>
       </Modal>
     </ScrollView>
+  </View>
   );
 }
