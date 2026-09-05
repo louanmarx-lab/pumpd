@@ -197,7 +197,11 @@ export default function WorkoutsScreen() {
   };
 
   return (
-    <ScrollView className="flex-1 bg-dark-bg px-4 py-4" showsVerticalScrollIndicator={false}>
+    <ScrollView
+      className="flex-1 bg-dark-bg px-4 py-4"
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingBottom: 40 }}
+    >
       {/* 1. WEEKLY MONDAY-TO-SUNDAY STRIP */}
       <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-5 shadow-md">
         <View className="flex-row items-center justify-between mb-3">

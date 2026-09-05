@@ -87,7 +87,11 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScrollView className="flex-1 bg-dark-bg px-4 py-4" showsVerticalScrollIndicator={false}>
+    <ScrollView
+      className="flex-1 bg-dark-bg px-4 py-4"
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingBottom: 40 }}
+    >
       {/* Active User Identity */}
       <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-5 flex-row items-center justify-between">
         <View className="flex-row items-center space-x-3 flex-1">

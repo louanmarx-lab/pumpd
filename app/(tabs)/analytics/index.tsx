@@ -133,7 +133,11 @@ export default function AnalyticsScreen() {
   const selectedExDef = exercises.find((e) => e.id === selectedExId);
 
   return (
-    <ScrollView className="flex-1 bg-dark-bg px-4 py-4" showsVerticalScrollIndicator={false}>
+    <ScrollView
+      className="flex-1 bg-dark-bg px-4 py-4"
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingBottom: 40 }}
+    >
       {/* Active User Header Banner */}
       <View className="flex-row items-center justify-between bg-dark-card border border-dark-border p-4 rounded-2xl mb-5">
         <View>

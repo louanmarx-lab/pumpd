@@ -25,6 +25,11 @@
       },
       "userInterfaceStyle": "dark"
     },
+    "androidNavigationBar": {
+      "visible": "always",
+      "barStyle": "light-content",
+      "backgroundColor": "#18181B"
+    },
     "web": {
       "bundler": "metro"
     },

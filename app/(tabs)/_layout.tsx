@@ -2,9 +2,14 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { HeaderSwitcher } from '../../components/HeaderSwitcher';
-import { View } from 'react-native';
+import { View, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
+  // Safe bottom padding for Samsung 3-button navigation, gesture pill, and iOS home bar
+  const safeBottom = Math.max(insets.bottom, Platform.OS === 'android' ? 14 : 8);
+
   return (
     <Tabs
       screenOptions={{
@@ -29,8 +34,8 @@ export default function TabsLayout() {
           backgroundColor: '#18181B',
           borderTopColor: '#27272A',
           borderTopWidth: 1,
-          height: 62,
-          paddingBottom: 8,
+          height: 56 + safeBottom,
+          paddingBottom: safeBottom,
           paddingTop: 6,
         },
         tabBarActiveTintColor: '#06B6D4',

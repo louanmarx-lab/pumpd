@@ -158,7 +158,11 @@ export default function NutritionScreen() {
     Math.min(100, Math.round((curr / Math.max(1, target)) * 100));
 
   return (
-    <ScrollView className="flex-1 bg-dark-bg px-4 py-4" showsVerticalScrollIndicator={false}>
+    <ScrollView
+      className="flex-1 bg-dark-bg px-4 py-4"
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingBottom: 40 }}
+    >
       {/* Date Switcher Header */}
       <View className="flex-row items-center justify-between bg-dark-card border border-dark-border p-3 rounded-2xl mb-4">
         <TouchableOpacity
