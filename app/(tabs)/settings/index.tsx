@@ -19,10 +19,16 @@ export default function SettingsScreen() {
     partnerUser,
     activeUser,
     activeWorkspace,
+    exercises,
+    workoutLogs,
+    nutritionLogs,
+    bodyMetrics,
     updateMacroTargets,
     updateUserName,
     linkPartnerUser,
     switchActiveUser,
+    clearAllData,
+    resetAllDataToDefaults,
   } = useUserWorkspace();
 
   // Macro Targets Edit State
@@ -268,20 +274,93 @@ export default function SettingsScreen() {
         )}
       </View>
 
-      {/* Offline Persistence Status Card */}
+      {/* Device Local Storage & Test Data Card */}
       <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-10">
-        <View className="flex-row items-center space-x-2 mb-2">
-          <Ionicons name="cloud-done-outline" size={20} color="#10B981" />
-          <Text className="text-base font-bold text-white">Firestore Offline Engine</Text>
+        <View className="flex-row items-center justify-between mb-2">
+          <View className="flex-row items-center space-x-2">
+            <Ionicons name="phone-portrait-outline" size={20} color="#06B6D4" />
+            <Text className="text-base font-bold text-white">Device Local Storage</Text>
+          </View>
+          <View className="flex-row items-center bg-accent-emerald/15 border border-accent-emerald/30 px-2 py-0.5 rounded-full">
+            <View className="w-1.5 h-1.5 rounded-full bg-accent-emerald mr-1.5" />
+            <Text className="text-[10px] font-bold text-accent-emerald">Persistent</Text>
+          </View>
         </View>
+
         <Text className="text-xs text-zinc-400 mb-3">
-          Zero-latency local cache enabled (`persistentLocalCache`). Logs and benchmarks read & write instantly in gym conditions.
+          All workouts, custom exercises, splits, and weigh-ins are saved directly to your device's persistent storage (<Text className="text-zinc-300 font-mono">AsyncStorage</Text>). Your changes remain intact across app updates, reboots, and offline gym use.
         </Text>
-        <View className="flex-row items-center bg-accent-emerald/10 border border-accent-emerald/30 p-2.5 rounded-xl space-x-2">
-          <View className="w-2.5 h-2.5 rounded-full bg-accent-emerald" />
-          <Text className="text-xs font-bold text-accent-emerald">
-            Offline Storage & Cache Sync Active
-          </Text>
+
+        <View className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 mb-4">
+          <Text className="text-xs font-semibold text-zinc-300 mb-2">Locally Saved Summary:</Text>
+          <View className="flex-row justify-between">
+            <View className="items-center flex-1">
+              <Text className="text-base font-bold text-white">{workoutLogs.length}</Text>
+              <Text className="text-[10px] text-zinc-400">Workouts</Text>
+            </View>
+            <View className="items-center flex-1">
+              <Text className="text-base font-bold text-white">{nutritionLogs.length}</Text>
+              <Text className="text-[10px] text-zinc-400">Nutrition Days</Text>
+            </View>
+            <View className="items-center flex-1">
+              <Text className="text-base font-bold text-white">{bodyMetrics.length}</Text>
+              <Text className="text-[10px] text-zinc-400">Weigh-Ins</Text>
+            </View>
+            <View className="items-center flex-1">
+              <Text className="text-base font-bold text-white">{exercises.length}</Text>
+              <Text className="text-[10px] text-zinc-400">Exercises</Text>
+            </View>
+          </View>
+        </View>
+
+        <View className="flex-row space-x-2">
+          <TouchableOpacity
+            onPress={() => {
+              Alert.alert(
+                'Clear Test Logs',
+                'Are you sure you want to clear all logged workouts, nutrition, and weigh-in records to start testing with a fresh slate?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Clear Data',
+                    style: 'destructive',
+                    onPress: async () => {
+                      await clearAllData();
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      Alert.alert('Logs Cleared', 'All test workouts, meals, and weigh-in logs have been cleared.');
+                    },
+                  },
+                ]
+              );
+            }}
+            className="flex-1 bg-zinc-800 border border-zinc-700 py-2.5 px-3 rounded-xl items-center mr-1"
+          >
+            <Text className="text-xs font-bold text-rose-400">Clear Test Logs</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              Alert.alert(
+                'Reset to Demo Defaults',
+                'Reset all accounts, splits, exercises, and logs to initial factory demo state?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Reset All',
+                    style: 'destructive',
+                    onPress: async () => {
+                      await resetAllDataToDefaults();
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      Alert.alert('Reset Complete', 'App data has been reset to initial defaults.');
+                    },
+                  },
+                ]
+              );
+            }}
+            className="flex-1 bg-zinc-800 border border-zinc-700 py-2.5 px-3 rounded-xl items-center ml-1"
+          >
+            <Text className="text-xs font-bold text-zinc-300">Reset Defaults</Text>
+          </TouchableOpacity>
         </View>
       </View>
 

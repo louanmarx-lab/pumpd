@@ -13,8 +13,14 @@ import {
   DaySchedule,
 } from '../types';
 import { DEFAULT_EXERCISES } from '../utils/fitness';
+import {
+  loadStoredAppData,
+  persistAppData,
+  clearStoredAppData,
+} from '../utils/storage';
 
 interface UserWorkspaceContextType {
+  isHydrated: boolean;
   currentUser: UserProfile;
   partnerUser: UserProfile | null;
   activeUser: UserProfile;
@@ -55,6 +61,8 @@ interface UserWorkspaceContextType {
   ) => void;
   deleteBodyMetric: (metricId: string) => void;
   linkPartnerUser: (partnerName: string, partnerEmail: string) => void;
+  clearAllData: () => Promise<void>;
+  resetAllDataToDefaults: () => Promise<void>;
 }
 
 // Initial Demo Accounts & Workspace
@@ -275,6 +283,7 @@ const initialBodyMetrics: BodyMetric[] = [
 const UserWorkspaceContext = createContext<UserWorkspaceContextType | undefined>(undefined);
 
 export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [isHydrated, setIsHydrated] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserProfile>(initialCurrentUser);
   const [partnerUser, setPartnerUser] = useState<UserProfile | null>(initialPartnerUser);
   const [activeUser, setActiveUser] = useState<UserProfile>(initialCurrentUser);
@@ -290,6 +299,75 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     user_alex: initialAlexSchedule,
     user_jordan: initialJordanSchedule,
   });
+
+  // 1. Hydrate state from local storage on launch
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const stored = await loadStoredAppData();
+        if (stored && isMounted) {
+          if (stored.currentUser) setCurrentUser(stored.currentUser);
+          if (stored.partnerUser !== undefined) setPartnerUser(stored.partnerUser);
+          if (stored.activeWorkspace) setActiveWorkspace(stored.activeWorkspace);
+          if (stored.exercises && stored.exercises.length > 0) setExercises(stored.exercises);
+          if (stored.splits && stored.splits.length > 0) setSplits(stored.splits);
+          if (stored.workoutLogs) setWorkoutLogs(stored.workoutLogs);
+          if (stored.nutritionLogs) setNutritionLogs(stored.nutritionLogs);
+          if (stored.bodyMetrics) setBodyMetrics(stored.bodyMetrics);
+          if (stored.userSchedules) setUserSchedules(stored.userSchedules);
+
+          if (stored.activeUserId) {
+            if (stored.partnerUser && stored.activeUserId === stored.partnerUser.id) {
+              setActiveUser(stored.partnerUser);
+            } else if (stored.currentUser && stored.activeUserId === stored.currentUser.id) {
+              setActiveUser(stored.currentUser);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[UserWorkspaceContext] Error hydrating local storage:', err);
+      } finally {
+        if (isMounted) {
+          setIsHydrated(true);
+        }
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Persist state to local storage whenever changed (after initial hydration)
+  useEffect(() => {
+    if (!isHydrated) return;
+
+    persistAppData({
+      currentUser,
+      partnerUser,
+      activeUserId: activeUser.id,
+      activeWorkspace,
+      exercises,
+      splits,
+      workoutLogs,
+      nutritionLogs,
+      bodyMetrics,
+      userSchedules,
+    });
+  }, [
+    isHydrated,
+    currentUser,
+    partnerUser,
+    activeUser.id,
+    activeWorkspace,
+    exercises,
+    splits,
+    workoutLogs,
+    nutritionLogs,
+    bodyMetrics,
+    userSchedules,
+  ]);
 
   const activeWeeklySchedule = userSchedules[activeUser.id] || initialAlexSchedule;
 
@@ -518,9 +596,47 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }));
   };
 
+  const clearAllData = async () => {
+    setWorkoutLogs([]);
+    setNutritionLogs([]);
+    setBodyMetrics([]);
+    if (isHydrated) {
+      await persistAppData({
+        currentUser,
+        partnerUser,
+        activeUserId: activeUser.id,
+        activeWorkspace,
+        exercises,
+        splits,
+        workoutLogs: [],
+        nutritionLogs: [],
+        bodyMetrics: [],
+        userSchedules,
+      });
+    }
+  };
+
+  const resetAllDataToDefaults = async () => {
+    await clearStoredAppData();
+    setCurrentUser(initialCurrentUser);
+    setPartnerUser(initialPartnerUser);
+    setActiveUser(initialCurrentUser);
+    setActiveWorkspace(initialWorkspace);
+    setExercises(DEFAULT_EXERCISES);
+    setSplits(initialSplits);
+    setWorkoutLogs(initialWorkoutLogs);
+    setNutritionLogs(initialNutritionLogs);
+    setBodyMetrics(initialBodyMetrics);
+    setUserSchedules({
+      user_alex: initialAlexSchedule,
+      user_jordan: initialJordanSchedule,
+    });
+  };
+
   return (
     <UserWorkspaceContext.Provider
       value={{
+        isHydrated,
         currentUser,
         partnerUser,
         activeUser,
@@ -548,6 +664,8 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         addBodyMetric,
         deleteBodyMetric,
         linkPartnerUser,
+        clearAllData,
+        resetAllDataToDefaults,
       }}
     >
       {children}
