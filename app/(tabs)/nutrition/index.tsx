@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
 import { useUserWorkspace } from '../../../src/context/UserWorkspaceContext';
+import { calculateEmpiricalTDEE } from '../../../src/utils/tdee';
 
 const getFormattedDate = (offsetDays: number = 0) => {
   const d = new Date(Date.now() + offsetDays * 86400000);
@@ -38,6 +39,7 @@ export default function NutritionScreen() {
   const {
     activeUser,
     nutritionLogs,
+    bodyMetrics,
     saveNutritionMeal,
     deleteNutritionMeal,
     updateMacroTargets,
@@ -45,6 +47,23 @@ export default function NutritionScreen() {
 
   const [dateOffset, setDateOffset] = useState<number>(0);
   const currentDateStr = getFormattedDate(dateOffset);
+
+  // 4-Week Empirical Maintenance (TDEE) Calculation (scoped to activeUser)
+  const tdeeResult = useMemo(() => {
+    return calculateEmpiricalTDEE(activeUser.id, nutritionLogs, bodyMetrics);
+  }, [activeUser.id, nutritionLogs, bodyMetrics]);
+
+  const handleSetTDEEAsTarget = (newTdee: number) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    updateMacroTargets({
+      ...targets,
+      calories: newTdee,
+    });
+    Alert.alert(
+      'Target Updated! 🎯',
+      `Daily calorie target for ${activeUser.displayName} updated to your empirical maintenance of ${newTdee} kcal.`
+    );
+  };
 
   // Fast Input Modal State
   const [showAddMealModal, setShowAddMealModal] = useState(false);
@@ -216,6 +235,110 @@ export default function NutritionScreen() {
               {totals.calories} / {targets.calories} kcal
             </Text>
           </TouchableOpacity>
+        </View>
+
+        {/* Calculated Empirical Maintenance (TDEE) Card */}
+        <View className="bg-zinc-950/90 border border-zinc-800/90 p-3.5 rounded-2xl mb-5">
+          <View className="flex-row items-center justify-between mb-2">
+            <View className="flex-row items-center space-x-2">
+              <View className="w-6 h-6 rounded-lg bg-cyan-500/20 items-center justify-center border border-cyan-500/40">
+                <Ionicons name="flame" size={13} color="#06B6D4" />
+              </View>
+              <Text className="text-xs font-bold text-white uppercase tracking-wider">
+                Calculated Maintenance
+              </Text>
+            </View>
+            <View
+              className={`px-2 py-0.5 rounded-full border ${
+                tdeeResult.status === 'ready'
+                  ? 'bg-emerald-500/20 border-emerald-500/40'
+                  : 'bg-zinc-800 border-zinc-700'
+              }`}
+            >
+              <Text
+                className={`text-[9px] font-extrabold uppercase ${
+                  tdeeResult.status === 'ready' ? 'text-emerald-400' : 'text-zinc-400'
+                }`}
+              >
+                {tdeeResult.status === 'ready' ? '4-Wk Regression' : 'Calibrating'}
+              </Text>
+            </View>
+          </View>
+
+          {tdeeResult.status === 'calibrating' ? (
+            <View>
+              <View className="flex-row items-center justify-between mb-1.5">
+                <Text className="text-[11px] font-semibold text-zinc-300">
+                  Calibrating ({tdeeResult.daysLogged}/{tdeeResult.requiredDays} days of data)
+                </Text>
+                <Text className="text-[10px] text-accent-cyan font-bold font-mono">
+                  {Math.min(100, Math.round((tdeeResult.daysLogged / tdeeResult.requiredDays) * 100))}%
+                </Text>
+              </View>
+              {/* Progress bar */}
+              <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden mb-2">
+                <View
+                  className="h-full bg-accent-cyan rounded-full"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round((tdeeResult.daysLogged / tdeeResult.requiredDays) * 100)
+                    )}%`,
+                  }}
+                />
+              </View>
+              <Text className="text-[10px] text-zinc-400 leading-tight">
+                Requires 14+ days of logged calories & 2 weigh-ins separated by 14+ days for scientific regression.
+              </Text>
+            </View>
+          ) : (
+            <View>
+              <View className="flex-row items-center justify-between mt-1">
+                <View className="flex-1 mr-2">
+                  <Text className="text-lg font-black text-accent-cyan">
+                    Maintenance: {tdeeResult.tdee} kcal
+                  </Text>
+                  <View className="flex-row items-center space-x-2 mt-1">
+                    <View
+                      className={`px-2 py-0.5 rounded ${
+                        tdeeResult.slopeKgPerWeek > 0.05
+                          ? 'bg-amber-500/20 border border-amber-500/40'
+                          : tdeeResult.slopeKgPerWeek < -0.05
+                          ? 'bg-emerald-500/20 border border-emerald-500/40'
+                          : 'bg-cyan-500/20 border border-cyan-500/40'
+                      }`}
+                    >
+                      <Text
+                        className={`text-[10px] font-bold ${
+                          tdeeResult.slopeKgPerWeek > 0.05
+                            ? 'text-amber-400'
+                            : tdeeResult.slopeKgPerWeek < -0.05
+                            ? 'text-emerald-400'
+                            : 'text-cyan-400'
+                        }`}
+                      >
+                        Trending: {tdeeResult.slopeKgPerWeek >= 0 ? '+' : ''}
+                        {tdeeResult.slopeKgPerWeek.toFixed(2)} kg/week
+                      </Text>
+                    </View>
+                    <Text className="text-[10px] text-zinc-400 font-medium">
+                      avg {tdeeResult.avgCalories} kcal
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Set as Target Button */}
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() => handleSetTDEEAsTarget(tdeeResult.tdee)}
+                  className="bg-accent-cyan px-3.5 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20"
+                >
+                  <Ionicons name="checkmark-circle-outline" size={15} color="#09090B" />
+                  <Text className="text-black font-extrabold text-xs">Set as Target</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* Circular Daily Energy Gauge */}

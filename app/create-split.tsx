@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,12 +8,12 @@ import {
   Modal,
   Alert,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
 import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
-import { Routine, MuscleGroup } from '../src/types';
+import { Routine, MuscleGroup, Split } from '../src/types';
 
 const MUSCLE_GROUPS: MuscleGroup[] = [
   'Chest',
@@ -27,15 +27,39 @@ const MUSCLE_GROUPS: MuscleGroup[] = [
   'Abs',
 ];
 
+interface RoutineFormState {
+  id?: string;
+  name: string;
+  exerciseIds: string[];
+}
+
 export default function CreateSplitScreen() {
   const router = useRouter();
-  const { activeUser, activeWorkspace, exercises, addSplit, addExercise } = useUserWorkspace();
+  const params = useLocalSearchParams<{ splitId?: string }>();
+  const splitId = params.splitId;
+
+  const {
+    activeUser,
+    activeWorkspace,
+    exercises,
+    splits,
+    addSplit,
+    updateSplit,
+    addExercise,
+  } = useUserWorkspace();
+
+  const existingSplit = splitId ? splits.find((s) => s.id === splitId) : null;
+  const isEditing = Boolean(existingSplit);
 
   const [splitName, setSplitName] = useState('');
-  const [routines, setRoutines] = useState<Omit<Routine, 'id'>[]>([
+  const [routines, setRoutines] = useState<RoutineFormState[]>([
     { name: 'Routine 1 (e.g. Upper)', exerciseIds: ['ex_1', 'ex_5'] },
     { name: 'Routine 2 (e.g. Lower)', exerciseIds: ['ex_8', 'ex_11'] },
   ]);
+
+  // Exercise picker modal per routine
+  const [activePickerRoutineIdx, setActivePickerRoutineIdx] = useState<number | null>(null);
+  const [pickerSearch, setPickerSearch] = useState('');
 
   // Create custom exercise state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -43,6 +67,20 @@ export default function CreateSplitScreen() {
   const [newExName, setNewExName] = useState('');
   const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>('Chest');
   const [newExEquipment, setNewExEquipment] = useState('Barbell');
+
+  // Load existing split when editing
+  useEffect(() => {
+    if (existingSplit) {
+      setSplitName(existingSplit.name);
+      setRoutines(
+        existingSplit.routines.map((r) => ({
+          id: r.id,
+          name: r.name,
+          exerciseIds: [...r.exerciseIds],
+        }))
+      );
+    }
+  }, [splitId]);
 
   const handleOpenCreateModal = (routineIdx?: number) => {
     setTargetRoutineIdx(routineIdx !== undefined ? routineIdx : null);
@@ -82,6 +120,7 @@ export default function CreateSplitScreen() {
   };
 
   const handleAddRoutine = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRoutines((prev) => [
       ...prev,
       {
@@ -91,13 +130,72 @@ export default function CreateSplitScreen() {
     ]);
   };
 
-  const handleToggleExerciseInRoutine = (routineIdx: number, exId: string) => {
+  const handleMoveRoutineUp = (rIdx: number) => {
+    if (rIdx === 0) return;
+    Haptics.selectionAsync();
+    setRoutines((prev) => {
+      const next = [...prev];
+      const temp = next[rIdx - 1];
+      next[rIdx - 1] = next[rIdx];
+      next[rIdx] = temp;
+      return next;
+    });
+  };
+
+  const handleMoveRoutineDown = (rIdx: number) => {
+    if (rIdx === routines.length - 1) return;
+    Haptics.selectionAsync();
+    setRoutines((prev) => {
+      const next = [...prev];
+      const temp = next[rIdx + 1];
+      next[rIdx + 1] = next[rIdx];
+      next[rIdx] = temp;
+      return next;
+    });
+  };
+
+  const handleDeleteRoutine = (rIdx: number) => {
+    if (routines.length <= 1) {
+      Alert.alert('Protected', 'A workout split must have at least one routine day.');
+      return;
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      'Delete Routine Day',
+      `Are you sure you want to remove "${routines[rIdx].name}" from this split?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setRoutines((prev) => prev.filter((_, idx) => idx !== rIdx));
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          },
+        },
+      ]
+    );
+  };
+
+  // Remove an exercise from a routine template
+  const handleRemoveExerciseFromRoutine = (routineIdx: number, exId: string, exName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRoutines((prev) => {
       const updated = [...prev];
       const r = { ...updated[routineIdx] };
-      if (r.exerciseIds.includes(exId)) {
-        r.exerciseIds = r.exerciseIds.filter((id) => id !== exId);
-      } else {
+      r.exerciseIds = r.exerciseIds.filter((id) => id !== exId);
+      updated[routineIdx] = r;
+      return updated;
+    });
+  };
+
+  // Toggle or add an exercise to a routine
+  const handleAddExerciseToRoutine = (routineIdx: number, exId: string) => {
+    Haptics.selectionAsync();
+    setRoutines((prev) => {
+      const updated = [...prev];
+      const r = { ...updated[routineIdx] };
+      if (!r.exerciseIds.includes(exId)) {
         r.exerciseIds = [...r.exerciseIds, exId];
       }
       updated[routineIdx] = r;
@@ -111,21 +209,44 @@ export default function CreateSplitScreen() {
       return;
     }
 
-    addSplit({
-      userId: activeUser.id,
-      name: splitName.trim(),
-      isActive: true,
-      routines: routines.map((r, i) => ({
-        id: `r_custom_${Date.now()}_${i}`,
-        name: r.name,
-        exerciseIds: r.exerciseIds,
-      })),
-    });
+    if (routines.length === 0) {
+      Alert.alert('Required', 'Please configure at least one routine.');
+      return;
+    }
 
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert('Split Created! 🎉', `Set "${splitName}" as active split for ${activeUser.displayName}.`, [
-      { text: 'Done', onPress: () => router.back() },
-    ]);
+    if (isEditing && existingSplit) {
+      const updated: Split = {
+        ...existingSplit,
+        name: splitName.trim(),
+        routines: routines.map((r, i) => ({
+          id: r.id || `r_${Date.now()}_${i}`,
+          name: r.name.trim() || `Routine ${i + 1}`,
+          exerciseIds: r.exerciseIds,
+        })),
+      };
+
+      updateSplit(updated);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Split Updated! 🎉', `Saved changes for "${splitName}".`, [
+        { text: 'Done', onPress: () => router.back() },
+      ]);
+    } else {
+      addSplit({
+        userId: activeUser.id,
+        name: splitName.trim(),
+        isActive: true,
+        routines: routines.map((r, i) => ({
+          id: `r_custom_${Date.now()}_${i}`,
+          name: r.name.trim() || `Routine ${i + 1}`,
+          exerciseIds: r.exerciseIds,
+        })),
+      });
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Split Created! 🎉', `Set "${splitName}" as active split for ${activeUser.displayName}.`, [
+        { text: 'Done', onPress: () => router.back() },
+      ]);
+    }
   };
 
   return (
@@ -134,36 +255,98 @@ export default function CreateSplitScreen() {
       contentContainerStyle={{ paddingBottom: 60 }}
       showsVerticalScrollIndicator={false}
     >
-      <Text className="text-xs text-zinc-400 mb-1">Split Title</Text>
+      {/* Screen Title & Persona Banner */}
+      <View className="mb-4">
+        <Text className="text-xl font-black text-white">
+          {isEditing ? 'Edit Workout Split' : 'Create Workout Split'}
+        </Text>
+        <Text className="text-xs text-zinc-400">
+          Configuring for <Text className="text-cyan-400 font-bold">{activeUser.displayName}</Text>
+        </Text>
+      </View>
+
+      {/* Split Title Input */}
+      <Text className="text-xs text-zinc-400 mb-1 font-semibold">Split Title *</Text>
       <TextInput
         value={splitName}
         onChangeText={setSplitName}
         placeholder="e.g. Push / Pull / Legs (5-Day)"
         placeholderTextColor="#71717A"
-        className="bg-dark-card border border-dark-border text-white p-3.5 rounded-xl text-base font-bold mb-6"
+        className="bg-dark-card border border-dark-border text-white p-3.5 rounded-xl text-base font-bold mb-5"
       />
 
+      {/* Routines & Days Section Header */}
       <View className="flex-row items-center justify-between mb-3">
-        <Text className="text-base font-bold text-white">Routines & Days</Text>
+        <Text className="text-base font-bold text-white">Routines & Days ({routines.length})</Text>
         <View className="flex-row items-center space-x-2">
           <TouchableOpacity
             onPress={() => handleOpenCreateModal()}
-            className="bg-zinc-800 border border-zinc-700 px-3 py-1.5 rounded-lg mr-2"
+            className="bg-zinc-800 border border-zinc-700 px-2.5 py-1.5 rounded-lg mr-1.5"
           >
             <Text className="text-xs font-bold text-zinc-200">+ New Exercise</Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={handleAddRoutine}
-            className="bg-cyan-500/20 border border-cyan-500 px-3 py-1.5 rounded-lg"
+            className="bg-cyan-500/20 border border-cyan-500 px-2.5 py-1.5 rounded-lg"
           >
             <Text className="text-xs font-bold text-cyan-400">+ Add Routine</Text>
           </TouchableOpacity>
         </View>
       </View>
 
+      {/* Routine Cards */}
       {routines.map((r, rIdx) => (
-        <View key={rIdx} className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-4">
-          <Text className="text-xs text-zinc-400 mb-1">Routine Name</Text>
+        <View key={r.id || rIdx} className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-4 shadow-md">
+          {/* Routine Header: Reordering & Delete Controls */}
+          <View className="flex-row items-center justify-between mb-2">
+            <View className="flex-row items-center space-x-2">
+              <View className="bg-cyan-500/20 border border-cyan-400/40 px-2 py-0.5 rounded-md">
+                <Text className="text-[10px] font-black text-cyan-400 uppercase">Day {rIdx + 1}</Text>
+              </View>
+              <Text className="text-xs text-zinc-400 font-bold">Routine Title</Text>
+            </View>
+
+            {/* Reorder and Delete Routine Buttons */}
+            <View className="flex-row items-center space-x-1">
+              {/* Move Up */}
+              <TouchableOpacity
+                disabled={rIdx === 0}
+                onPress={() => handleMoveRoutineUp(rIdx)}
+                className={`p-1.5 rounded-lg border ${
+                  rIdx === 0 ? 'bg-zinc-900 border-zinc-800 opacity-40' : 'bg-zinc-800 border-zinc-700'
+                }`}
+              >
+                <Ionicons name="chevron-up" size={14} color={rIdx === 0 ? '#71717A' : '#E4E4E7'} />
+              </TouchableOpacity>
+
+              {/* Move Down */}
+              <TouchableOpacity
+                disabled={rIdx === routines.length - 1}
+                onPress={() => handleMoveRoutineDown(rIdx)}
+                className={`p-1.5 rounded-lg border ${
+                  rIdx === routines.length - 1
+                    ? 'bg-zinc-900 border-zinc-800 opacity-40'
+                    : 'bg-zinc-800 border-zinc-700'
+                }`}
+              >
+                <Ionicons
+                  name="chevron-down"
+                  size={14}
+                  color={rIdx === routines.length - 1 ? '#71717A' : '#E4E4E7'}
+                />
+              </TouchableOpacity>
+
+              {/* Delete Routine */}
+              <TouchableOpacity
+                onPress={() => handleDeleteRoutine(rIdx)}
+                className="p-1.5 bg-red-950/40 border border-red-800/60 rounded-lg ml-1"
+              >
+                <Ionicons name="trash-outline" size={14} color="#EF4444" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Routine Name Input */}
           <TextInput
             value={r.name}
             onChangeText={(text) => {
@@ -173,61 +356,193 @@ export default function CreateSplitScreen() {
                 return updated;
               });
             }}
-            className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl mb-3 font-bold"
+            placeholder="e.g. Upper Body Strength"
+            placeholderTextColor="#71717A"
+            className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl mb-3 font-bold text-sm"
           />
 
-          <View className="flex-row items-center justify-between mb-2">
-            <Text className="text-xs text-zinc-400">Select Included Exercises:</Text>
+          {/* Included Exercises Section with Delete Trash Buttons */}
+          <View className="flex-row items-center justify-between mb-2 mt-1">
+            <Text className="text-xs font-bold text-zinc-300">
+              Included Exercises ({r.exerciseIds.length})
+            </Text>
             <TouchableOpacity
-              onPress={() => handleOpenCreateModal(rIdx)}
-              className="flex-row items-center"
+              onPress={() => {
+                Haptics.selectionAsync();
+                setPickerSearch('');
+                setActivePickerRoutineIdx(rIdx);
+              }}
+              className="flex-row items-center bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-lg"
             >
-              <Ionicons name="add-circle" size={14} color="#06B6D4" />
-              <Text className="text-[11px] font-bold text-cyan-400 ml-1">Create Exercise</Text>
+              <Ionicons name="add" size={14} color="#06B6D4" />
+              <Text className="text-[11px] font-bold text-accent-cyan ml-1">+ Add Exercise</Text>
             </TouchableOpacity>
           </View>
 
-          <View className="flex-row flex-wrap">
-            {exercises.map((ex) => {
-              const isSelected = r.exerciseIds.includes(ex.id);
-              const isCustom = Boolean(ex.workspaceId);
-              return (
-                <TouchableOpacity
-                  key={ex.id}
-                  onPress={() => handleToggleExerciseInRoutine(rIdx, ex.id)}
-                  className={`px-3 py-1.5 rounded-lg mr-2 mb-2 border flex-row items-center ${
-                    isSelected
-                      ? 'bg-accent-cyan border-cyan-400'
-                      : 'bg-zinc-900 border-zinc-800'
-                  }`}
-                >
-                  <Text
-                    className={`text-xs font-semibold ${
-                      isSelected ? 'text-black font-bold' : 'text-white'
-                    }`}
+          {/* Included Exercises List */}
+          {r.exerciseIds.length > 0 ? (
+            <View className="space-y-1.5 mb-2">
+              {r.exerciseIds.map((exId, exIdx) => {
+                const exDef = exercises.find((e) => e.id === exId);
+                const exName = exDef ? exDef.name : 'Unknown Exercise';
+                const muscle = exDef ? exDef.muscleGroup : 'Other';
+
+                return (
+                  <View
+                    key={`${exId}-${exIdx}`}
+                    className="bg-zinc-950 border border-zinc-800/80 px-3 py-2 rounded-xl flex-row items-center justify-between mb-1.5"
                   >
-                    {ex.name}
-                  </Text>
-                  {isCustom && (
-                    <View className="ml-1.5 px-1 py-0.2 bg-purple-500/30 rounded border border-purple-400/40">
-                      <Text className={`text-[9px] font-bold ${isSelected ? 'text-purple-950' : 'text-purple-300'}`}>
-                        Custom
-                      </Text>
+                    <View className="flex-row items-center space-x-2 flex-1 mr-2">
+                      <View className="w-5 h-5 rounded-full bg-zinc-900 items-center justify-center">
+                        <Text className="text-[10px] font-bold text-zinc-400">{exIdx + 1}</Text>
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-xs font-bold text-white" numberOfLines={1}>
+                          {exName}
+                        </Text>
+                        <Text className="text-[10px] text-zinc-400">{muscle}</Text>
+                      </View>
                     </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+
+                    {/* Trash/Remove Icon Button */}
+                    <TouchableOpacity
+                      onPress={() => handleRemoveExerciseFromRoutine(rIdx, exId, exName)}
+                      className="p-1.5 bg-zinc-900 rounded-lg border border-zinc-800"
+                    >
+                      <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </View>
+          ) : (
+            <View className="bg-zinc-950/80 p-3 rounded-xl border border-dashed border-zinc-800 mb-2 items-center">
+              <Text className="text-xs text-zinc-500">No exercises added yet. Tap "+ Add Exercise".</Text>
+            </View>
+          )}
         </View>
       ))}
 
+      {/* Save Button */}
       <TouchableOpacity
+        activeOpacity={0.85}
         onPress={handleSave}
         className="bg-accent-cyan p-4 rounded-2xl items-center mb-10 shadow-lg shadow-cyan-500/20"
       >
-        <Text className="text-black font-extrabold text-base">Save & Set Active Split</Text>
+        <Text className="text-black font-extrabold text-base">
+          {isEditing ? 'Save Changes' : 'Save & Set Active Split'}
+        </Text>
       </TouchableOpacity>
+
+      {/* MODAL: ADD EXERCISE TO ROUTINE */}
+      <Modal visible={activePickerRoutineIdx !== null} animationType="slide" transparent>
+        <View className="flex-1 bg-black/80 justify-end">
+          <View className="bg-dark-card border-t border-zinc-800 p-5 rounded-t-3xl max-h-[85%]">
+            <View className="flex-row items-center justify-between pb-3 border-b border-zinc-800 mb-3">
+              <View>
+                <Text className="text-base font-black text-white">Add Exercise to Routine</Text>
+                <Text className="text-xs text-zinc-400">
+                  {activePickerRoutineIdx !== null ? routines[activePickerRoutineIdx]?.name : ''}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setActivePickerRoutineIdx(null)}>
+                <Ionicons name="close-circle" size={24} color="#71717A" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Search Input */}
+            <View className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 flex-row items-center space-x-2 mb-3">
+              <Ionicons name="search" size={16} color="#71717A" />
+              <TextInput
+                value={pickerSearch}
+                onChangeText={setPickerSearch}
+                placeholder="Search by name, muscle, or equipment..."
+                placeholderTextColor="#71717A"
+                className="flex-1 text-white text-xs font-medium"
+              />
+              {pickerSearch.length > 0 && (
+                <TouchableOpacity onPress={() => setPickerSearch('')}>
+                  <Ionicons name="close" size={16} color="#A1A1AA" />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* List of exercises */}
+            <ScrollView showsVerticalScrollIndicator={false} className="max-h-[380px]">
+              {exercises
+                .filter((ex) => {
+                  if (!pickerSearch.trim()) return true;
+                  const q = pickerSearch.toLowerCase();
+                  return (
+                    ex.name.toLowerCase().includes(q) ||
+                    ex.muscleGroup.toLowerCase().includes(q) ||
+                    ex.equipment.toLowerCase().includes(q)
+                  );
+                })
+                .map((ex) => {
+                  const currentRoutine =
+                    activePickerRoutineIdx !== null ? routines[activePickerRoutineIdx] : null;
+                  const isAlreadyIncluded = currentRoutine?.exerciseIds.includes(ex.id) || false;
+
+                  return (
+                    <TouchableOpacity
+                      key={ex.id}
+                      onPress={() => {
+                        if (activePickerRoutineIdx !== null) {
+                          if (isAlreadyIncluded) {
+                            handleRemoveExerciseFromRoutine(activePickerRoutineIdx, ex.id, ex.name);
+                          } else {
+                            handleAddExerciseToRoutine(activePickerRoutineIdx, ex.id);
+                          }
+                        }
+                      }}
+                      className={`p-3 rounded-xl mb-2 border flex-row items-center justify-between ${
+                        isAlreadyIncluded
+                          ? 'bg-zinc-800/90 border-accent-cyan'
+                          : 'bg-zinc-950 border-zinc-800/70'
+                      }`}
+                    >
+                      <View className="flex-1 mr-2">
+                        <Text
+                          className={`text-xs font-bold ${
+                            isAlreadyIncluded ? 'text-accent-cyan' : 'text-white'
+                          }`}
+                        >
+                          {ex.name}
+                        </Text>
+                        <Text className="text-[10px] text-zinc-400 mt-0.5">
+                          {ex.muscleGroup} • {ex.equipment}
+                        </Text>
+                      </View>
+
+                      <View
+                        className={`w-7 h-7 rounded-lg items-center justify-center border ${
+                          isAlreadyIncluded
+                            ? 'bg-accent-cyan border-accent-cyan'
+                            : 'bg-zinc-900 border-zinc-800'
+                        }`}
+                      >
+                        <Ionicons
+                          name={isAlreadyIncluded ? 'checkmark' : 'add'}
+                          size={16}
+                          color={isAlreadyIncluded ? '#09090B' : '#A1A1AA'}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+            </ScrollView>
+
+            {/* Done button */}
+            <TouchableOpacity
+              onPress={() => setActivePickerRoutineIdx(null)}
+              className="bg-accent-cyan p-3.5 rounded-xl items-center mt-3"
+            >
+              <Text className="text-black font-extrabold text-sm">Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* CREATE CUSTOM EXERCISE MODAL */}
       <Modal visible={showCreateModal} animationType="slide" transparent>

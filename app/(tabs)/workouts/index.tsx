@@ -157,6 +157,33 @@ export default function WorkoutsScreen() {
     );
   };
 
+  const handleDeleteSplit = (splitId: string, splitName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (userSplits.length <= 1) {
+      Alert.alert(
+        'Cannot Delete',
+        'You must have at least one workout split configured for this user.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Delete Workout Split',
+      `Are you sure you want to delete "${splitName}"? Any schedule references will be safely reset to Rest Days.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteSplit(splitId);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          },
+        },
+      ]
+    );
+  };
+
   // Filter splits belonging to active user
   const userSplits = splits.filter((s) => s.userId === activeUser.id);
   const activeSplit = userSplits.find((s) => s.isActive) || userSplits[0];
@@ -658,18 +685,37 @@ export default function WorkoutsScreen() {
               Active Workout Split
             </Text>
           </View>
-          <TouchableOpacity
-            onPress={() => router.push('/create-split')}
-            className="flex-row items-center bg-cyan-500/15 border border-cyan-500/60 px-3 py-1.5 rounded-lg"
-          >
-            <Ionicons name="layers-outline" size={15} color="#06B6D4" />
-            <Text className="text-xs font-bold text-cyan-400 ml-1.5">New Split</Text>
-          </TouchableOpacity>
+          <View className="flex-row items-center space-x-2">
+            {activeSplit && (
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  router.push({
+                    pathname: '/create-split',
+                    params: { splitId: activeSplit.id },
+                  });
+                }}
+                className="flex-row items-center bg-zinc-800 border border-zinc-750 px-2.5 py-1.5 rounded-lg"
+              >
+                <Ionicons name="pencil" size={13} color="#E4E4E7" />
+                <Text className="text-xs font-semibold text-zinc-200 ml-1">Edit</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              onPress={() => router.push('/create-split')}
+              className="flex-row items-center bg-cyan-500/15 border border-cyan-500/60 px-2.5 py-1.5 rounded-lg"
+            >
+              <Ionicons name="add" size={15} color="#06B6D4" />
+              <Text className="text-xs font-bold text-cyan-400 ml-0.5">New</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {activeSplit ? (
           <View>
-            <Text className="text-xl font-bold text-white mb-2">{activeSplit.name}</Text>
+            <View className="flex-row items-center justify-between mb-2">
+              <Text className="text-xl font-bold text-white">{activeSplit.name}</Text>
+            </View>
             <Text className="text-xs text-zinc-400 mb-3">
               Routines configured for {activeUser.displayName}:
             </Text>
@@ -710,8 +756,8 @@ export default function WorkoutsScreen() {
         )}
       </View>
 
-      {/* All Saved Splits list if more than 1 */}
-      {userSplits.length > 1 && (
+      {/* All Saved Splits list */}
+      {userSplits.length > 0 && (
         <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
           <Text className="text-xs text-zinc-400 font-bold uppercase tracking-wider mb-3">
             All Saved Splits ({userSplits.length})
@@ -736,17 +782,40 @@ export default function WorkoutsScreen() {
                     {split.routines.length} routines configured
                   </Text>
                 </View>
-                {!isCurrentActive && (
+
+                <View className="flex-row items-center space-x-1.5">
+                  {!isCurrentActive && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        updateSplit({ ...split, isActive: true });
+                      }}
+                      className="bg-cyan-500/20 border border-cyan-500 px-2.5 py-1.5 rounded-lg"
+                    >
+                      <Text className="text-xs font-bold text-cyan-400">Set Active</Text>
+                    </TouchableOpacity>
+                  )}
+
                   <TouchableOpacity
                     onPress={() => {
                       Haptics.selectionAsync();
-                      updateSplit({ ...split, isActive: true });
+                      router.push({
+                        pathname: '/create-split',
+                        params: { splitId: split.id },
+                      });
                     }}
-                    className="bg-cyan-500/20 border border-cyan-500 px-3 py-1.5 rounded-lg"
+                    className="bg-zinc-850 border border-zinc-750 p-2 rounded-lg"
                   >
-                    <Text className="text-xs font-bold text-cyan-400">Set Active</Text>
+                    <Ionicons name="pencil" size={14} color="#D4D4D8" />
                   </TouchableOpacity>
-                )}
+
+                  <TouchableOpacity
+                    onPress={() => handleDeleteSplit(split.id, split.name)}
+                    className="bg-red-500/10 border border-red-500/30 p-2 rounded-lg"
+                  >
+                    <Ionicons name="trash-outline" size={14} color="#EF4444" />
+                  </TouchableOpacity>
+                </View>
               </View>
             );
           })}

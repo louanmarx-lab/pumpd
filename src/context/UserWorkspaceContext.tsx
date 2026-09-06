@@ -47,6 +47,7 @@ interface UserWorkspaceContextType {
   addSplit: (split: Omit<Split, 'id'>) => Split;
   updateSplit: (split: Split) => void;
   deleteSplit: (splitId: string) => void;
+  removeExerciseFromRoutine: (splitId: string, routineId: string, exerciseId: string) => void;
   saveWorkoutLog: (log: Omit<WorkoutLog, 'id'>) => WorkoutLog;
   deleteWorkoutLog: (logId: string) => void;
   saveNutritionMeal: (date: string, meal: Omit<Meal, 'id'>) => void;
@@ -473,7 +474,86 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const deleteSplit = (splitId: string) => {
-    setSplits((prev) => prev.filter((s) => s.id !== splitId));
+    const splitToDelete = splits.find((s) => s.id === splitId);
+    if (!splitToDelete) return;
+
+    const userSplits = splits.filter((s) => s.userId === splitToDelete.userId);
+    // Protected default: prevent deleting if only 1 split remains for user
+    if (userSplits.length <= 1) {
+      return;
+    }
+
+    const routineIdsToDelete = new Set(splitToDelete.routines.map((r) => r.id));
+
+    // 1. Delete split and promote another split to active if the deleted split was active
+    setSplits((prev) => {
+      const remaining = prev.filter((s) => s.id !== splitId);
+      if (splitToDelete.isActive) {
+        const remainingUserSplits = remaining.filter((s) => s.userId === splitToDelete.userId);
+        if (remainingUserSplits.length > 0) {
+          const firstRemainingId = remainingUserSplits[0].id;
+          return remaining.map((s) =>
+            s.id === firstRemainingId ? { ...s, isActive: true } : s
+          );
+        }
+      }
+      return remaining;
+    });
+
+    // 2. Cascade cleanup on userSchedules
+    // Reset any day referencing a deleted routine to 'rest'
+    setUserSchedules((prev) => {
+      const currentSched = prev[splitToDelete.userId] || [];
+      const cleanedSched = currentSched.map((dayItem: DaySchedule) => {
+        if (routineIdsToDelete.has(dayItem.routineId)) {
+          return {
+            day: dayItem.day,
+            routineId: 'rest',
+            routineName: 'Rest Day',
+            exerciseIds: [],
+          };
+        }
+        return dayItem;
+      });
+      return { ...prev, [splitToDelete.userId]: cleanedSched };
+    });
+  };
+
+  const removeExerciseFromRoutine = (splitId: string, routineId: string, exerciseId: string) => {
+    setSplits((prev) =>
+      prev.map((s) => {
+        if (s.id !== splitId) return s;
+        return {
+          ...s,
+          routines: s.routines.map((r) => {
+            if (r.id !== routineId) return r;
+            return {
+              ...r,
+              exerciseIds: r.exerciseIds.filter((id) => id !== exerciseId),
+            };
+          }),
+        };
+      })
+    );
+
+    // Also update userSchedules if this routine is currently active on any day
+    setUserSchedules((prev) => {
+      let changed = false;
+      const next: Record<string, DaySchedule[]> = {};
+      for (const [userId, sched] of Object.entries(prev)) {
+        next[userId] = sched.map((dayItem: DaySchedule) => {
+          if (dayItem.routineId === routineId && dayItem.exerciseIds) {
+            changed = true;
+            return {
+              ...dayItem,
+              exerciseIds: dayItem.exerciseIds.filter((id: string) => id !== exerciseId),
+            };
+          }
+          return dayItem;
+        });
+      }
+      return changed ? next : prev;
+    });
   };
 
   const saveWorkoutLog = (newLog: Omit<WorkoutLog, 'id'>): WorkoutLog => {
@@ -655,6 +735,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         addSplit,
         updateSplit,
         deleteSplit,
+        removeExerciseFromRoutine,
         saveWorkoutLog,
         deleteWorkoutLog,
         saveNutritionMeal,
