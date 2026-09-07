@@ -13,6 +13,7 @@ import * as Haptics from 'expo-haptics';
 
 import { useUserWorkspace } from '../../../src/context/UserWorkspaceContext';
 import { calculateEmpiricalTDEE } from '../../../src/utils/tdee';
+import { MealArchetypesQuickAdd } from '../../../src/components/MealArchetypesQuickAdd';
 
 const getFormattedDate = (offsetDays: number = 0) => {
   const d = new Date(Date.now() + offsetDays * 86400000);
@@ -170,6 +171,23 @@ export default function NutritionScreen() {
         },
       },
     ]);
+  };
+
+  const handleQuickLogArchetype = (archetypeMeal: {
+    label: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fats: number;
+  }) => {
+    saveNutritionMeal(currentDateStr, {
+      label: archetypeMeal.label,
+      calories: archetypeMeal.calories,
+      protein: archetypeMeal.protein,
+      carbs: archetypeMeal.carbs,
+      fats: archetypeMeal.fats,
+      timestamp: Date.now(),
+    });
   };
 
   // Helper for progress percentages
@@ -521,6 +539,9 @@ export default function NutritionScreen() {
           <Text className="text-xs font-bold text-accent-cyan">Edit Daily Macro & Calorie Targets</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Meal Archetypes Quick-Log Carousel */}
+      <MealArchetypesQuickAdd onLogMeal={handleQuickLogArchetype} />
 
       {/* Fast Input Launch Button */}
       <TouchableOpacity

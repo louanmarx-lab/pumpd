@@ -20,6 +20,11 @@ import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
 import { HeaderSwitcher } from '../components/HeaderSwitcher';
 import { SetType, SetLog, LoggedExercise, Exercise, MuscleGroup } from '../src/types';
 import { calculate1RM, getExerciseHistory } from '../src/utils/fitness';
+import { useGymJam } from '../src/hooks/useGymJam';
+import { GymJamLobbyModal } from '../src/components/GymJamLobbyModal';
+import { PlateCalculatorModal } from '../src/components/PlateCalculatorModal';
+import { WorkoutReceiptModal } from '../src/components/WorkoutReceiptModal';
+import { WorkoutReceiptData } from '../src/types/gymjam';
 
 const SET_TYPES: SetType[] = ['Normal', 'Warmup', 'Drop', 'Failure'];
 const MUSCLE_GROUPS: MuscleGroup[] = [
@@ -109,6 +114,70 @@ export default function ActiveSessionScreen() {
   const [secondsElapsed, setSecondsElapsed] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
 
+  // Gym Jam P2P State & Handlers
+  const [showGymJamLobby, setShowGymJamLobby] = useState(false);
+
+  // Plate Calculator Modal State
+  const [showPlateModal, setShowPlateModal] = useState(false);
+  const [plateTargetSet, setPlateTargetSet] = useState<{ exIdx: number; setIdx: number } | null>(null);
+  const [plateInitialWeight, setPlateInitialWeight] = useState<number>(60);
+
+  // Workout Receipt Modal State
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [receiptData, setReceiptData] = useState<WorkoutReceiptData | null>(null);
+
+  const gymJam = useGymJam({
+    currentUserId: activeUser.id,
+    currentUserName: activeUser.displayName,
+    onSyncSessionReceived: (msg) => {
+      // Synchronize routine title and exercises if guest
+      if (msg.exerciseIds && msg.exerciseIds.length > 0) {
+        setUserExercisesMap((prev) => {
+          const next = { ...prev };
+          const guestList = buildInitialExercisesForUser(activeUser.id);
+          next[activeUser.id] = guestList;
+          return next;
+        });
+      }
+    },
+    onPartnerLoggedSet: (msg) => {
+      setUserExercisesMap((prev) => {
+        const next = { ...prev };
+        const partnerList = next[msg.userId] ? [...next[msg.userId]] : buildInitialExercisesForUser(msg.userId);
+        const exIdx = partnerList.findIndex((e) => e.exerciseId === msg.exerciseId);
+        if (exIdx !== -1) {
+          const ex = { ...partnerList[exIdx] };
+          const sets = [...ex.sets];
+          while (sets.length <= msg.setIndex) {
+            sets.push({
+              setNumber: sets.length + 1,
+              type: 'Normal',
+              weightKg: msg.weight,
+              reps: msg.reps,
+              isCompleted: false,
+            });
+          }
+          sets[msg.setIndex] = {
+            ...sets[msg.setIndex],
+            weightKg: msg.weight,
+            reps: msg.reps,
+            isCompleted: true,
+          };
+          ex.sets = sets;
+          partnerList[exIdx] = ex;
+          next[msg.userId] = partnerList;
+        }
+        return next;
+      });
+    },
+    onExerciseAdded: (msg) => {
+      const exDef = exercises.find((e) => e.id === msg.exerciseId);
+      if (exDef) {
+        handleAddExerciseToSession(exDef, false);
+      }
+    },
+  });
+
   useEffect(() => {
     if (!isTimerRunning) return;
     const timer = setInterval(() => {
@@ -168,10 +237,34 @@ export default function ActiveSessionScreen() {
     });
   };
 
+  const openPlateCalculator = (exIdx: number, setIdx: number, currentWeight: number) => {
+    setPlateTargetSet({ exIdx, setIdx });
+    setPlateInitialWeight(currentWeight || 60);
+    setShowPlateModal(true);
+  };
+
+  const handleApplyPlateWeight = (newWeight: number) => {
+    if (plateTargetSet) {
+      handleUpdateSet(plateTargetSet.exIdx, plateTargetSet.setIdx, 'weightKg', newWeight);
+    }
+  };
+
   const handleToggleComplete = (exIndex: number, setIndex: number) => {
     const currentCompleted = currentSessionExercises[exIndex]?.sets[setIndex]?.isCompleted || false;
     if (!currentCompleted) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      // If Gym Jam is connected, broadcast set completion
+      if (gymJam.connectionStatus === 'connected') {
+        const currentSet = currentSessionExercises[exIndex]?.sets[setIndex];
+        if (currentSet) {
+          gymJam.broadcastLogSet(
+            currentSessionExercises[exIndex].exerciseId,
+            setIndex,
+            currentSet.weightKg,
+            currentSet.reps
+          );
+        }
+      }
     } else {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -238,8 +331,11 @@ export default function ActiveSessionScreen() {
     setSwapTargetIndex(null);
   };
 
-  const handleAddExerciseToSession = (ex: Exercise) => {
+  const handleAddExerciseToSession = (ex: Exercise, broadcast: boolean = true) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (broadcast && gymJam.connectionStatus === 'connected') {
+      gymJam.broadcastAddExercise(ex.id, ex.name);
+    }
     setUserExercisesMap((prev) => {
       const nextMap = { ...prev };
       const userIds = Object.keys(nextMap);
@@ -340,12 +436,77 @@ export default function ActiveSessionScreen() {
       }
     });
 
+    // Build Workout Receipt Data for the active lifter
+    const activeExList = exercisesByUser[activeUser.id] || [];
+    let totalVolume = 0;
+    let totalSets = 0;
+    let totalReps = 0;
+    let bestLift: WorkoutReceiptData['bestLift'] = null;
+    let highest1RM = 0;
+
+    const exercisesSummary: WorkoutReceiptData['exercisesSummary'] = [];
+
+    activeExList.forEach((ex) => {
+      const completedSets = ex.sets.filter((s) => s.isCompleted);
+      if (completedSets.length > 0) {
+        let topWeight = 0;
+        let topReps = 0;
+        completedSets.forEach((s) => {
+          totalVolume += (s.weightKg || 0) * (s.reps || 0);
+          totalSets += 1;
+          totalReps += s.reps || 0;
+
+          const est1RM = calculate1RM(s.weightKg, s.reps);
+          if (est1RM > highest1RM) {
+            highest1RM = est1RM;
+            bestLift = {
+              exerciseName: ex.exerciseName,
+              weightKg: s.weightKg,
+              reps: s.reps,
+            };
+          }
+
+          if (s.weightKg > topWeight) {
+            topWeight = s.weightKg;
+            topReps = s.reps;
+          }
+        });
+
+        exercisesSummary.push({
+          exerciseName: ex.exerciseName,
+          completedSetsCount: completedSets.length,
+          topSetWeight: topWeight,
+          topSetReps: topReps,
+        });
+      }
+    });
+
+    setReceiptData({
+      id: `PMPD-${Math.floor(100000 + Math.random() * 900000)}`,
+      date: todayDate,
+      routineName: routineTitle,
+      durationSeconds: secondsElapsed,
+      totalVolumeKg: Math.round(totalVolume),
+      totalSets,
+      totalReps,
+      bestLift,
+      gymJamBuddy:
+        gymJam.connectionStatus === 'connected' && gymJam.partnerName
+          ? {
+              name: gymJam.partnerName,
+              roomPin: gymJam.roomPin || '',
+            }
+          : partnerUser && partnerUser.id !== currentUser.id
+          ? {
+              name: partnerUser.displayName,
+              roomPin: 'LOCAL-DUO',
+            }
+          : null,
+      exercisesSummary,
+    });
+
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert(
-      'Workout Complete! 💪',
-      `Logged workout in ${formatDuration(secondsElapsed)} for:\n• ${savedSummaries.join('\n• ')}`,
-      [{ text: 'Great Job!', onPress: () => router.back() }]
-    );
+    setShowReceiptModal(true);
   };
 
   return (
@@ -374,8 +535,45 @@ export default function ActiveSessionScreen() {
             </View>
           </View>
 
-          {/* Right Controls: Switcher & Finish */}
-          <View className="flex-row items-center space-x-2">
+          {/* Right Controls: Gym Jam, Switcher & Finish */}
+          <View className="flex-row items-center space-x-1.5">
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setShowGymJamLobby(true)}
+              className={`flex-row items-center px-2.5 py-1.5 rounded-xl border ${
+                gymJam.connectionStatus === 'connected'
+                  ? 'bg-emerald-500/15 border-emerald-500/60'
+                  : gymJam.connectionStatus === 'connecting'
+                  ? 'bg-amber-500/15 border-amber-500/60'
+                  : 'bg-zinc-850 border-zinc-750'
+              }`}
+            >
+              <View
+                className={`w-2 h-2 rounded-full mr-1.5 ${
+                  gymJam.connectionStatus === 'connected'
+                    ? 'bg-emerald-400'
+                    : gymJam.connectionStatus === 'connecting'
+                    ? 'bg-amber-400'
+                    : 'bg-cyan-400'
+                }`}
+              />
+              <Text
+                className={`text-[10px] font-black ${
+                  gymJam.connectionStatus === 'connected'
+                    ? 'text-emerald-400'
+                    : gymJam.connectionStatus === 'connecting'
+                    ? 'text-amber-400'
+                    : 'text-cyan-300'
+                }`}
+              >
+                {gymJam.connectionStatus === 'connected'
+                  ? gymJam.partnerName
+                    ? gymJam.partnerName.split(' ')[0]
+                    : gymJam.roomPin
+                  : 'Jam'}
+              </Text>
+            </TouchableOpacity>
+
             <HeaderSwitcher />
 
             <TouchableOpacity
@@ -388,6 +586,22 @@ export default function ActiveSessionScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Gym Jam Live Feed Toast Notification */}
+        {gymJam.liveToasts.length > 0 && (
+          <View className="px-3 pt-2">
+            {gymJam.liveToasts.map((toast) => (
+              <View
+                key={toast.id}
+                className="bg-cyan-950/95 border border-cyan-500/60 rounded-xl px-3 py-2 mb-1.5 flex-row items-center space-x-2 shadow-lg"
+              >
+                <Ionicons name="flash" size={13} color="#06B6D4" />
+                <Text className="text-xs font-bold text-white flex-1">{toast.message}</Text>
+                <Text className="text-[10px] text-cyan-400 font-mono">LIVE</Text>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Partner Duo Turn Bar */}
         {partnerUser && (
@@ -495,16 +709,26 @@ export default function ActiveSessionScreen() {
                       </View>
                     </View>
                   </View>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setSwapTargetIndex(exIdx);
-                      setShowSwapModal(true);
-                    }}
-                    className="bg-zinc-800 border border-zinc-700 px-2.5 py-1.5 rounded-lg flex-row items-center space-x-1"
-                  >
-                    <Ionicons name="swap-horizontal" size={14} color="#A1A1AA" />
-                    <Text className="text-[11px] text-zinc-300 font-medium">Swap</Text>
-                  </TouchableOpacity>
+                  <View className="flex-row items-center space-x-1.5">
+                    <TouchableOpacity
+                      onPress={() => openPlateCalculator(exIdx, 0, exItem.sets[0]?.weightKg || 60)}
+                      className="bg-cyan-500/15 border border-cyan-500/40 px-2 py-1.5 rounded-lg flex-row items-center space-x-1"
+                    >
+                      <Ionicons name="barbell-outline" size={13} color="#06B6D4" />
+                      <Text className="text-[11px] text-cyan-300 font-bold">Plates</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() => {
+                        setSwapTargetIndex(exIdx);
+                        setShowSwapModal(true);
+                      }}
+                      className="bg-zinc-800 border border-zinc-700 px-2.5 py-1.5 rounded-lg flex-row items-center space-x-1"
+                    >
+                      <Ionicons name="swap-horizontal" size={14} color="#A1A1AA" />
+                      <Text className="text-[11px] text-zinc-300 font-medium">Swap</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 {/* Historical Benchmarks Card */}
@@ -618,8 +842,8 @@ export default function ActiveSessionScreen() {
                         </Text>
                       </TouchableOpacity>
 
-                      {/* Weight Input */}
-                      <View className="flex-1 mx-1">
+                      {/* Weight Input + Plate Calculator Trigger */}
+                      <View className="flex-1 mx-1 flex-row items-center">
                         <TextInput
                           keyboardType="numeric"
                           value={set.weightKg.toString()}
@@ -631,8 +855,14 @@ export default function ActiveSessionScreen() {
                               parseFloat(text) || 0
                             )
                           }
-                          className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-2 rounded-lg font-bold text-sm"
+                          className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-1 rounded-l-lg font-bold text-sm flex-1"
                         />
+                        <TouchableOpacity
+                          onPress={() => openPlateCalculator(exIdx, setIdx, set.weightKg)}
+                          className="bg-zinc-850 border-y border-r border-zinc-700 py-2 px-1.5 rounded-r-lg items-center justify-center"
+                        >
+                          <Ionicons name="barbell-outline" size={13} color="#06B6D4" />
+                        </TouchableOpacity>
                       </View>
 
                       {/* Reps Input */}
@@ -893,6 +1123,46 @@ export default function ActiveSessionScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* Gym Jam Lobby Modal */}
+        <GymJamLobbyModal
+          visible={showGymJamLobby}
+          onClose={() => setShowGymJamLobby(false)}
+          connectionStatus={gymJam.connectionStatus}
+          roomPin={gymJam.roomPin}
+          role={gymJam.role}
+          partnerName={gymJam.partnerName}
+          onHostSession={() => {
+            gymJam.hostRoom({
+              routineName: routineTitle,
+              exerciseIds: initialIds,
+            });
+          }}
+          onJoinSession={async (pin) => {
+            return await gymJam.joinRoom(pin);
+          }}
+          onDisconnect={() => gymJam.disconnect()}
+          onStartSession={() => setShowGymJamLobby(false)}
+        />
+
+        {/* Barbell Plate Calculator Modal */}
+        <PlateCalculatorModal
+          visible={showPlateModal}
+          onClose={() => setShowPlateModal(false)}
+          initialWeight={plateInitialWeight}
+          lifterName={activeUser.displayName}
+          onApplyWeight={handleApplyPlateWeight}
+        />
+
+        {/* Aesthetic Shareable Workout Receipt Modal */}
+        <WorkoutReceiptModal
+          visible={showReceiptModal}
+          receiptData={receiptData}
+          onClose={() => {
+            setShowReceiptModal(false);
+            router.back();
+          }}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
