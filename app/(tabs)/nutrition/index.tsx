@@ -7,6 +7,8 @@ import {
   Modal,
   TextInput,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -14,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import { useUserWorkspace } from '../../../src/context/UserWorkspaceContext';
 import { calculateEmpiricalTDEE } from '../../../src/utils/tdee';
 import { MealArchetypesQuickAdd } from '../../../src/components/MealArchetypesQuickAdd';
+import { ProteinRecommendationCard } from '../../../src/components/ProteinRecommendationCard';
 
 const getFormattedDate = (offsetDays: number = 0) => {
   const d = new Date(Date.now() + offsetDays * 86400000);
@@ -46,8 +49,36 @@ export default function NutritionScreen() {
     updateMacroTargets,
   } = useUserWorkspace();
 
-  const [dateOffset, setDateOffset] = useState<number>(0);
-  const currentDateStr = getFormattedDate(dateOffset);
+  const todayStr = getFormattedDate(0);
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const currentDateStr = selectedDate;
+
+  // Jump to Date Modal
+  const [showDatePickerModal, setShowDatePickerModal] = useState(false);
+  const [jumpDateInput, setJumpDateInput] = useState(todayStr);
+
+  const handlePrevDay = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const d = new Date(selectedDate + 'T12:00:00');
+    d.setDate(d.getDate() - 1);
+    setSelectedDate(d.toISOString().split('T')[0]);
+  };
+
+  const handleNextDay = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const d = new Date(selectedDate + 'T12:00:00');
+    d.setDate(d.getDate() + 1);
+    setSelectedDate(d.toISOString().split('T')[0]);
+  };
+
+  const getDateLabel = (dateStr: string) => {
+    if (dateStr === todayStr) return 'Today';
+    const yDay = getFormattedDate(-1);
+    if (dateStr === yDay) return 'Yesterday';
+    const tomDay = getFormattedDate(1);
+    if (dateStr === tomDay) return 'Tomorrow';
+    return dateStr;
+  };
 
   // 4-Week Empirical Maintenance (TDEE) Calculation (scoped to activeUser)
   const tdeeResult = useMemo(() => {
@@ -73,6 +104,8 @@ export default function NutritionScreen() {
   const [protein, setProtein] = useState('');
   const [carbs, setCarbs] = useState('');
   const [fats, setFats] = useState('');
+  const [mealDateOption, setMealDateOption] = useState<'selected' | 'today' | 'yesterday' | 'custom'>('selected');
+  const [customMealDate, setCustomMealDate] = useState(todayStr);
 
   // Target Editing State
   const [showEditTargetsModal, setShowEditTargetsModal] = useState(false);
@@ -114,6 +147,21 @@ export default function NutritionScreen() {
     setShowEditTargetsModal(true);
   };
 
+  // User's latest logged body weight for reactive metric updates
+  const userMetrics = useMemo(() => {
+    return bodyMetrics
+      .filter(
+        (m) =>
+          m.userId === activeUser.id &&
+          typeof m.weightKg === 'number' &&
+          m.weightKg > 0
+      )
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [bodyMetrics, activeUser.id]);
+
+  const latestWeightKg =
+    userMetrics.length > 0 ? userMetrics[userMetrics.length - 1].weightKg : 75;
+
   const handleSaveTargets = () => {
     const c = parseInt(targetCaloriesInput, 10) || 2000;
     const p = parseInt(targetProteinInput, 10) || 150;
@@ -125,7 +173,13 @@ export default function NutritionScreen() {
       return;
     }
 
-    updateMacroTargets({ calories: c, protein: p, carbs: cb, fats: f });
+    updateMacroTargets({
+      calories: c,
+      protein: p,
+      carbs: cb,
+      fats: f,
+      dailyProteinGoalGrams: p,
+    });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowEditTargetsModal(false);
   };
@@ -141,7 +195,16 @@ export default function NutritionScreen() {
       return;
     }
 
-    saveNutritionMeal(currentDateStr, {
+    const mealTargetDate =
+      mealDateOption === 'selected'
+        ? selectedDate
+        : mealDateOption === 'today'
+        ? todayStr
+        : mealDateOption === 'yesterday'
+        ? getFormattedDate(-1)
+        : customMealDate.trim() || selectedDate;
+
+    saveNutritionMeal(mealTargetDate, {
       label: mealLabel.trim() || 'Quick Macro Log',
       calories: calNum > 0 ? calNum : Math.round(pNum * 4 + cNum * 4 + fNum * 9),
       protein: pNum,
@@ -150,12 +213,14 @@ export default function NutritionScreen() {
       timestamp: Date.now(),
     });
 
+    setSelectedDate(mealTargetDate);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setMealLabel('');
     setCalories('');
     setProtein('');
     setCarbs('');
     setFats('');
+    setMealDateOption('selected');
     setShowAddMealModal(false);
   };
 
@@ -203,33 +268,33 @@ export default function NutritionScreen() {
       {/* Date Switcher Header */}
       <View className="flex-row items-center justify-between bg-dark-card border border-dark-border p-3 rounded-2xl mb-4">
         <TouchableOpacity
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setDateOffset((prev) => prev - 1);
-          }}
+          onPress={handlePrevDay}
           className="p-2 bg-zinc-800 rounded-xl"
         >
           <Ionicons name="chevron-back" size={20} color="#F4F4F5" />
         </TouchableOpacity>
 
-        <View className="items-center">
-          <Text className="text-base font-bold text-white">
-            {dateOffset === 0
-              ? 'Today'
-              : dateOffset === -1
-              ? 'Yesterday'
-              : dateOffset === 1
-              ? 'Tomorrow'
-              : currentDateStr}
-          </Text>
-          <Text className="text-[11px] text-zinc-400 font-medium">{currentDateStr}</Text>
-        </View>
-
         <TouchableOpacity
+          activeOpacity={0.7}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setDateOffset((prev) => prev + 1);
+            setJumpDateInput(selectedDate);
+            setShowDatePickerModal(true);
           }}
+          className="items-center px-4 py-1.5 rounded-xl bg-zinc-900/90 border border-zinc-800"
+        >
+          <View className="flex-row items-center space-x-1.5">
+            <Ionicons name="calendar-outline" size={14} color="#06B6D4" />
+            <Text className="text-base font-bold text-white">
+              {getDateLabel(selectedDate)}
+            </Text>
+            <Ionicons name="chevron-down" size={12} color="#71717A" />
+          </View>
+          <Text className="text-[11px] text-zinc-400 font-medium">{selectedDate}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={handleNextDay}
           className="p-2 bg-zinc-800 rounded-xl"
         >
           <Ionicons name="chevron-forward" size={20} color="#F4F4F5" />
@@ -241,7 +306,16 @@ export default function NutritionScreen() {
         <View className="flex-row items-center justify-between mb-4">
           <View>
             <Text className="text-xs text-zinc-400 font-medium">Active User</Text>
-            <Text className="text-lg font-bold text-white">{activeUser.displayName}</Text>
+            <View className="flex-row items-center space-x-2">
+              <Text className="text-lg font-bold text-white">{activeUser.displayName}</Text>
+              {latestWeightKg > 0 && (
+                <View className="bg-zinc-800/90 px-2 py-0.5 rounded-md border border-zinc-700">
+                  <Text className="text-[11px] font-bold text-zinc-300">
+                    {latestWeightKg} kg
+                  </Text>
+                </View>
+              )}
+            </View>
           </View>
           <TouchableOpacity
             activeOpacity={0.8}
@@ -555,13 +629,20 @@ export default function NutritionScreen() {
 
       {/* Meals Breakdown List */}
       <View className="mb-10">
-        <Text className="text-lg font-bold text-white mb-3">{"Today's Meals"}</Text>
+        <View className="flex-row items-center justify-between mb-3">
+          <Text className="text-lg font-bold text-white">
+            {selectedDate === todayStr ? "Today's Meals" : `Meals for ${selectedDate}`}
+          </Text>
+          <Text className="text-xs font-semibold text-zinc-400">
+            {meals.length} Logged
+          </Text>
+        </View>
 
         {meals.length === 0 ? (
           <View className="bg-dark-card border border-dark-border p-6 rounded-2xl items-center">
             <Ionicons name="restaurant-outline" size={32} color="#71717A" />
             <Text className="text-sm text-zinc-400 mt-2 font-medium">
-              No meals logged for {dateOffset === 0 ? 'today' : currentDateStr}.
+              No meals logged for {selectedDate === todayStr ? 'today' : selectedDate}.
             </Text>
           </View>
         ) : (
@@ -600,6 +681,92 @@ export default function NutritionScreen() {
                 <Ionicons name="close" size={24} color="#A1A1AA" />
               </TouchableOpacity>
             </View>
+
+            {/* Meal Date Selector */}
+            <Text className="text-xs text-zinc-300 font-bold mb-2">Meal Date</Text>
+            <View className="flex-row space-x-2 mb-3">
+              <TouchableOpacity
+                onPress={() => setMealDateOption('selected')}
+                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
+                  mealDateOption === 'selected'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-[11px] font-bold ${
+                    mealDateOption === 'selected' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                  numberOfLines={1}
+                >
+                  {getDateLabel(selectedDate)}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setMealDateOption('today')}
+                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
+                  mealDateOption === 'today'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-[11px] font-bold ${
+                    mealDateOption === 'today' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                >
+                  Today
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setMealDateOption('yesterday')}
+                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
+                  mealDateOption === 'yesterday'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-[11px] font-bold ${
+                    mealDateOption === 'yesterday' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                >
+                  Yesterday
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setMealDateOption('custom')}
+                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
+                  mealDateOption === 'custom'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-[11px] font-bold ${
+                    mealDateOption === 'custom' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                >
+                  Custom
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {mealDateOption === 'custom' && (
+              <View className="mb-3">
+                <Text className="text-[11px] text-zinc-400 mb-1">Enter Date (YYYY-MM-DD):</Text>
+                <TextInput
+                  value={customMealDate}
+                  onChangeText={setCustomMealDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white px-3 py-2 rounded-xl text-sm font-semibold"
+                />
+              </View>
+            )}
 
             <Text className="text-xs text-zinc-400 mb-1">Meal Name (Optional)</Text>
             <TextInput
@@ -674,8 +841,11 @@ export default function NutritionScreen() {
 
       {/* Edit Daily Macro Targets Modal */}
       <Modal visible={showEditTargetsModal} transparent animationType="slide">
-        <View className="flex-1 bg-black/80 justify-end">
-          <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          className="flex-1 bg-black/80 justify-end"
+        >
+          <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5 max-h-[88%]">
             <View className="flex-row items-center justify-between mb-2 border-b border-zinc-800 pb-3">
               <View className="flex-row items-center space-x-2">
                 <Ionicons name="options" size={20} color="#06B6D4" />
@@ -686,67 +856,166 @@ export default function NutritionScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text className="text-xs text-zinc-400 mb-4">
-              Set custom daily nutrition goals for <Text className="text-white font-bold">{activeUser.displayName}</Text>.
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+              <Text className="text-xs text-zinc-400 mb-4">
+                Set custom daily nutrition goals for <Text className="text-white font-bold">{activeUser.displayName}</Text>.
+              </Text>
+
+              {/* Evidence-Based Recommended Protein Targets Card (Active in Edit Mode) */}
+              <ProteinRecommendationCard
+                className="mb-4 bg-zinc-900/60 border-zinc-800"
+                onTierSelected={(tier) => {
+                  setTargetProteinInput(tier.grams.toString());
+                }}
+              />
+
+              <View className="mb-4">
+                <Text className="text-xs text-accent-cyan font-semibold mb-1">Energy Target (kcal)</Text>
+                <TextInput
+                  keyboardType="numeric"
+                  value={targetCaloriesInput}
+                  onChangeText={setTargetCaloriesInput}
+                  placeholder="2500"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold text-base"
+                />
+              </View>
+
+              <View className="flex-row space-x-3 mb-6">
+                <View className="flex-1">
+                  <Text className="text-xs text-accent-emerald font-semibold mb-1">Protein (g)</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    value={targetProteinInput}
+                    onChangeText={setTargetProteinInput}
+                    placeholder="180"
+                    placeholderTextColor="#71717A"
+                    className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                  />
+                </View>
+
+                <View className="flex-1">
+                  <Text className="text-xs text-accent-cyan font-semibold mb-1">Carbs (g)</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    value={targetCarbsInput}
+                    onChangeText={setTargetCarbsInput}
+                    placeholder="250"
+                    placeholderTextColor="#71717A"
+                    className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                  />
+                </View>
+
+                <View className="flex-1">
+                  <Text className="text-xs text-amber-400 font-semibold mb-1">Fats (g)</Text>
+                  <TextInput
+                    keyboardType="numeric"
+                    value={targetFatsInput}
+                    onChangeText={setTargetFatsInput}
+                    placeholder="70"
+                    placeholderTextColor="#71717A"
+                    className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={handleSaveTargets}
+                className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20"
+              >
+                <Text className="text-black font-extrabold text-base">Save Targets</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Jump to Date / Backdate Nutrition Modal */}
+      <Modal visible={showDatePickerModal} transparent animationType="fade">
+        <View className="flex-1 bg-black/80 justify-center px-4">
+          <View className="bg-dark-card border border-zinc-800 p-5 rounded-2xl shadow-2xl">
+            <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+              <View className="flex-row items-center space-x-2">
+                <Ionicons name="calendar" size={20} color="#06B6D4" />
+                <Text className="text-lg font-bold text-white">Select Nutrition Date</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowDatePickerModal(false)}>
+                <Ionicons name="close" size={24} color="#A1A1AA" />
+              </TouchableOpacity>
+            </View>
+
+            <Text className="text-xs text-zinc-400 mb-3">
+              View or backdate calorie and macronutrient intake for any past date:
             </Text>
 
-            <View className="mb-4">
-              <Text className="text-xs text-accent-cyan font-semibold mb-1">Energy Target (kcal)</Text>
-              <TextInput
-                keyboardType="numeric"
-                value={targetCaloriesInput}
-                onChangeText={setTargetCaloriesInput}
-                placeholder="2500"
-                placeholderTextColor="#71717A"
-                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold text-base"
-              />
+            {/* Quick Presets */}
+            <View className="flex-row flex-wrap gap-2 mb-4">
+              {[
+                { label: 'Today', date: getFormattedDate(0) },
+                { label: 'Yesterday', date: getFormattedDate(-1) },
+                { label: '2 Days Ago', date: getFormattedDate(-2) },
+                { label: '3 Days Ago', date: getFormattedDate(-3) },
+                { label: '1 Week Ago', date: getFormattedDate(-7) },
+              ].map((preset) => (
+                <TouchableOpacity
+                  key={preset.label}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    setSelectedDate(preset.date);
+                    setShowDatePickerModal(false);
+                  }}
+                  className={`py-2 px-3 rounded-xl border ${
+                    selectedDate === preset.date
+                      ? 'bg-cyan-500/20 border-cyan-500'
+                      : 'bg-zinc-900 border-zinc-800'
+                  }`}
+                >
+                  <Text
+                    className={`text-xs font-bold ${
+                      selectedDate === preset.date ? 'text-cyan-400' : 'text-zinc-300'
+                    }`}
+                  >
+                    {preset.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
-            <View className="flex-row space-x-3 mb-6">
-              <View className="flex-1">
-                <Text className="text-xs text-accent-emerald font-semibold mb-1">Protein (g)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={targetProteinInput}
-                  onChangeText={setTargetProteinInput}
-                  placeholder="180"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
+            <Text className="text-xs text-zinc-300 font-bold mb-1.5">
+              Custom Date (YYYY-MM-DD):
+            </Text>
+            <TextInput
+              value={jumpDateInput}
+              onChangeText={setJumpDateInput}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor="#71717A"
+              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-mono text-base mb-5"
+            />
 
-              <View className="flex-1">
-                <Text className="text-xs text-accent-cyan font-semibold mb-1">Carbs (g)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={targetCarbsInput}
-                  onChangeText={setTargetCarbsInput}
-                  placeholder="250"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
-
-              <View className="flex-1">
-                <Text className="text-xs text-amber-400 font-semibold mb-1">Fats (g)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={targetFatsInput}
-                  onChangeText={setTargetFatsInput}
-                  placeholder="70"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
+            <View className="flex-row space-x-3">
+              <TouchableOpacity
+                onPress={() => setShowDatePickerModal(false)}
+                className="flex-1 bg-zinc-800 py-3 rounded-xl items-center border border-zinc-700"
+              >
+                <Text className="text-zinc-300 font-semibold text-sm">Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  const cleaned = jumpDateInput.trim();
+                  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+                    Alert.alert('Invalid Format', 'Please enter date in YYYY-MM-DD format.');
+                    return;
+                  }
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  setSelectedDate(cleaned);
+                  setShowDatePickerModal(false);
+                }}
+                className="flex-1 bg-accent-cyan py-3 rounded-xl items-center shadow-md shadow-cyan-500/20"
+              >
+                <Text className="text-black font-extrabold text-sm">Jump to Date</Text>
+              </TouchableOpacity>
             </View>
-
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={handleSaveTargets}
-              className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20"
-            >
-              <Text className="text-black font-extrabold text-base">Save Targets</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>

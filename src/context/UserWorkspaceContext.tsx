@@ -14,10 +14,37 @@ import {
 } from '../types';
 import { DEFAULT_EXERCISES } from '../utils/fitness';
 import {
+  UserRole,
+  CoachProfile,
+  ClientProfile,
+  PrescribedMealArchetype,
+} from '../types/trainer';
+import {
   loadStoredAppData,
   persistAppData,
   clearStoredAppData,
+  loadUserData,
+  persistUserData,
+  getActiveSession,
 } from '../utils/storage';
+import { User as FirebaseUser } from 'firebase/auth';
+import {
+  saveUserProfileCloud,
+  saveWorkoutLogCloud,
+  deleteWorkoutLogCloud,
+  subscribeToWorkoutLogs,
+  saveNutritionLogCloud,
+  deleteNutritionMealCloud,
+  subscribeToNutritionLogs,
+  saveBodyMetricCloud,
+  deleteBodyMetricCloud,
+  subscribeToBodyMetrics,
+  saveSplitsCloud,
+  saveCoachProfileCloud,
+  saveClientsCloud,
+  savePrescribedArchetypesCloud,
+} from '../services/firestoreService';
+import { subscribeToAuth, signInAsGuest, signOutUser } from '../services/authService';
 
 interface UserWorkspaceContextType {
   isHydrated: boolean;
@@ -40,6 +67,21 @@ interface UserWorkspaceContextType {
   ) => void;
   shiftSplitSchedule: (fromDay: DayOfWeek) => void;
   
+  // Trainer & Client Dual Mode
+  userRole: UserRole;
+  coachProfile: CoachProfile;
+  clients: ClientProfile[];
+  prescribedArchetypes: PrescribedMealArchetype[];
+  setUserRole: (role: UserRole) => void;
+  updateCoachProfile: (profile: Partial<CoachProfile>) => void;
+  addClient: (client: Omit<ClientProfile, 'id' | 'createdAt'>) => ClientProfile;
+  updateClient: (client: ClientProfile) => void;
+  deleteClient: (clientId: string) => void;
+  assignClientRoutine: (clientId: string, routineId: string, routineName: string) => void;
+  assignClientMacros: (clientId: string, targets: MacroTargets) => void;
+  assignClientArchetypes: (clientId: string, archetypes: PrescribedMealArchetype[]) => void;
+  setPrescribedArchetypes: React.Dispatch<React.SetStateAction<PrescribedMealArchetype[]>>;
+
   // Actions
   switchActiveUser: (userId: string) => void;
   addExercise: (exercise: Omit<Exercise, 'id'>) => Exercise;
@@ -64,6 +106,15 @@ interface UserWorkspaceContextType {
   linkPartnerUser: (partnerName: string, partnerEmail: string) => void;
   clearAllData: () => Promise<void>;
   resetAllDataToDefaults: () => Promise<void>;
+
+  // Firebase Auth & Cloud Sync
+  firebaseUser: FirebaseUser | null;
+  isAuthReady: boolean;
+  cloudSyncStatus: 'synced' | 'syncing' | 'offline';
+  lastCloudSyncTimestamp: number | null;
+  syncAllToCloud: () => Promise<void>;
+  signOut: () => Promise<void>;
+  continueAsGuest: (role?: UserRole) => Promise<void>;
 }
 
 // Initial Demo Accounts & Workspace
@@ -281,6 +332,78 @@ const initialBodyMetrics: BodyMetric[] = [
   { id: 'bm_j3', userId: 'user_jordan', date: todayStr, weightKg: 67.5, bodyFatPercentage: 21.5, skeletalMuscleMassKg: 28.5 },
 ];
 
+// Initial Coach Profile & Demo Client Roster
+const initialCoachProfile: CoachProfile = {
+  name: 'Alex Johnson',
+  businessName: 'Apex Performance Coaching',
+  instagramHandle: '@alex_apexfit',
+};
+
+const initialPrescribedArchetypes: PrescribedMealArchetype[] = [
+  {
+    id: 'arch_presc_1',
+    name: 'Post-Workout Shake',
+    emoji: '🥤',
+    calories: 320,
+    protein: 45,
+    carbs: 30,
+    fats: 2,
+    prescribedBy: 'Apex Performance Coaching',
+    instructions: 'Drink within 45 mins of workout completion with 400ml water.',
+  },
+  {
+    id: 'arch_presc_2',
+    name: 'Chicken & Rice Staple',
+    emoji: '🍗',
+    calories: 580,
+    protein: 52,
+    carbs: 65,
+    fats: 10,
+    prescribedBy: 'Apex Performance Coaching',
+    instructions: '200g grilled breast, 250g cooked basmati, steamed greens.',
+  },
+  {
+    id: 'arch_presc_3',
+    name: 'Breakfast Eggs & Toast',
+    emoji: '🍳',
+    calories: 390,
+    protein: 28,
+    carbs: 32,
+    fats: 16,
+    prescribedBy: 'Apex Performance Coaching',
+    instructions: '3 whole eggs scrambled, 2 slices sourdough toast, spinach.',
+  },
+];
+
+const initialClients: ClientProfile[] = [
+  {
+    id: 'client_marcus',
+    name: 'Marcus Vance',
+    avatarEmoji: '⚡',
+    email: 'marcus@gmail.com',
+    notes: 'Focus on progressive overload on bench and squat. Knee rehab warmups.',
+    macroTargets: { calories: 2800, protein: 190, carbs: 320, fats: 80 },
+    assignedRoutineIds: ['r_push', 'r_pull', 'r_legs'],
+    assignedRoutineNames: ['Push Day (Chest, Shoulders)', 'Pull Day (Back & Biceps)', 'Leg Day (Quads, Calves)'],
+    prescribedArchetypes: [initialPrescribedArchetypes[0], initialPrescribedArchetypes[1]],
+    createdAt: Date.now() - 14 * 86400000,
+    lastSessionDate: yesterdayStr,
+  },
+  {
+    id: 'client_sophia',
+    name: 'Sophia Chen',
+    avatarEmoji: '🔥',
+    email: 'sophia.chen@fit.com',
+    notes: 'Glute hypertrophy and pull-up progression.',
+    macroTargets: { calories: 2100, protein: 145, carbs: 220, fats: 65 },
+    assignedRoutineIds: ['r_upper', 'r_lower'],
+    assignedRoutineNames: ['Upper Body Power', 'Lower Body Hypertrophy'],
+    prescribedArchetypes: [initialPrescribedArchetypes[2]],
+    createdAt: Date.now() - 20 * 86400000,
+    lastSessionDate: threeDaysAgoStr,
+  },
+];
+
 const UserWorkspaceContext = createContext<UserWorkspaceContextType | undefined>(undefined);
 
 export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -290,11 +413,23 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const [activeUser, setActiveUser] = useState<UserProfile>(initialCurrentUser);
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace>(initialWorkspace);
 
+  // Trainer & Client Dual Mode State
+  const [userRole, setUserRole] = useState<UserRole>('athlete');
+  const [coachProfile, setCoachProfile] = useState<CoachProfile>(initialCoachProfile);
+  const [clients, setClients] = useState<ClientProfile[]>(initialClients);
+  const [prescribedArchetypes, setPrescribedArchetypes] = useState<PrescribedMealArchetype[]>(initialPrescribedArchetypes);
+
   const [exercises, setExercises] = useState<Exercise[]>(DEFAULT_EXERCISES);
   const [splits, setSplits] = useState<Split[]>(initialSplits);
   const [workoutLogs, setWorkoutLogs] = useState<WorkoutLog[]>(initialWorkoutLogs);
   const [nutritionLogs, setNutritionLogs] = useState<NutritionLog[]>(initialNutritionLogs);
   const [bodyMetrics, setBodyMetrics] = useState<BodyMetric[]>(initialBodyMetrics);
+
+  // Cloud Sync & Auth State
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline'>('synced');
+  const [lastCloudSyncTimestamp, setLastCloudSyncTimestamp] = useState<number | null>(Date.now());
 
   const [userSchedules, setUserSchedules] = useState<Record<string, DaySchedule[]>>({
     user_alex: initialAlexSchedule,
@@ -317,6 +452,12 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
           if (stored.nutritionLogs) setNutritionLogs(stored.nutritionLogs);
           if (stored.bodyMetrics) setBodyMetrics(stored.bodyMetrics);
           if (stored.userSchedules) setUserSchedules(stored.userSchedules);
+          if (stored.userRole) setUserRole(stored.userRole);
+          if (stored.coachProfile) setCoachProfile(stored.coachProfile);
+          if (stored.clients && stored.clients.length > 0) setClients(stored.clients);
+          if (stored.prescribedArchetypes && stored.prescribedArchetypes.length > 0) {
+            setPrescribedArchetypes(stored.prescribedArchetypes);
+          }
 
           if (stored.activeUserId) {
             if (stored.partnerUser && stored.activeUserId === stored.partnerUser.id) {
@@ -355,7 +496,20 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       nutritionLogs,
       bodyMetrics,
       userSchedules,
+      userRole,
+      coachProfile,
+      clients,
+      prescribedArchetypes,
     });
+
+    if (activeUser?.id) {
+      persistUserData(activeUser.id, {
+        workoutLogs,
+        nutritionLogs,
+        bodyMetrics,
+        userRole,
+      });
+    }
   }, [
     isHydrated,
     currentUser,
@@ -368,7 +522,180 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     nutritionLogs,
     bodyMetrics,
     userSchedules,
+    userRole,
+    coachProfile,
+    clients,
+    prescribedArchetypes,
   ]);
+
+  // 3. Firebase & Local Auth Initialization & State Tracking
+  useEffect(() => {
+    let hasResolved = false;
+    const unsub = subscribeToAuth(async (user) => {
+      hasResolved = true;
+      setFirebaseUser(user);
+      if (user && !user.isAnonymous) {
+        const userProfile: UserProfile = {
+          id: user.uid,
+          displayName: user.displayName || user.email?.split('@')[0] || 'Lifter',
+          email: user.email || '',
+          activeWorkspaceId: `ws_${user.uid}`,
+          macroTargets: { calories: 2500, protein: 175, carbs: 260, fats: 75 },
+          createdAt: Date.now(),
+        };
+        setCurrentUser(userProfile);
+        setActiveUser(userProfile);
+        setCloudSyncStatus('synced');
+
+        // Load isolated user data for this specific user
+        const userData = await loadUserData(user.uid);
+        if (userData) {
+          if (userData.workoutLogs) setWorkoutLogs(userData.workoutLogs);
+          if (userData.nutritionLogs) setNutritionLogs(userData.nutritionLogs);
+          if (userData.bodyMetrics) setBodyMetrics(userData.bodyMetrics);
+          if (userData.userRole) setUserRole(userData.userRole);
+        }
+
+        const session = await getActiveSession();
+        if (session?.userRole) {
+          setUserRole(session.userRole);
+        }
+      } else if (user && user.isAnonymous) {
+        setCloudSyncStatus('synced');
+        const session = await getActiveSession();
+        if (session?.userRole) {
+          setUserRole(session.userRole);
+        }
+      } else {
+        setCloudSyncStatus('offline');
+      }
+      setIsAuthReady(true);
+    });
+
+    // Safeguard: Ensure screen is never stuck indefinitely on splash/loading if auth delays
+    const fallbackTimer = setTimeout(() => {
+      if (!hasResolved) {
+        setIsAuthReady(true);
+      }
+    }, 1200);
+
+    return () => {
+      clearTimeout(fallbackTimer);
+      unsub();
+    };
+  }, []);
+
+  const signOut = async () => {
+    try {
+      if (activeUser?.id) {
+        await persistUserData(activeUser.id, {
+          workoutLogs,
+          nutritionLogs,
+          bodyMetrics,
+          userRole,
+        });
+      }
+      await signOutUser();
+      setFirebaseUser(null);
+      setCurrentUser(initialCurrentUser);
+      setActiveUser(initialCurrentUser);
+      setWorkoutLogs([]);
+      setNutritionLogs([]);
+      setBodyMetrics([]);
+    } catch (err) {
+      console.warn('[Auth] Error signing out:', err);
+    }
+  };
+
+  const continueAsGuest = async (role: UserRole = 'athlete') => {
+    try {
+      setUserRole(role);
+      await signInAsGuest(role);
+    } catch (err) {
+      console.warn('[Auth] Error signing in as guest:', err);
+    }
+  };
+
+  // 4. Cloud Firestore Real-Time Sync with Local Persistent Cache
+  useEffect(() => {
+    if (!activeUser?.id || !isHydrated) return;
+
+    const unsubWorkouts = subscribeToWorkoutLogs(activeUser.id, (cloudLogs) => {
+      if (cloudLogs.length > 0) {
+        setWorkoutLogs((prev) => {
+          const map = new Map<string, WorkoutLog>();
+          prev.forEach((l) => map.set(l.id, l));
+          cloudLogs.forEach((l) => map.set(l.id, l));
+          return Array.from(map.values()).sort(
+            (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+          );
+        });
+        setLastCloudSyncTimestamp(Date.now());
+        setCloudSyncStatus('synced');
+      }
+    });
+
+    const unsubNutrition = subscribeToNutritionLogs(activeUser.id, (cloudLogs) => {
+      if (cloudLogs.length > 0) {
+        setNutritionLogs((prev) => {
+          const map = new Map<string, NutritionLog>();
+          prev.forEach((l) => map.set(l.date, l));
+          cloudLogs.forEach((l) => map.set(l.date, l));
+          return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+        });
+        setLastCloudSyncTimestamp(Date.now());
+        setCloudSyncStatus('synced');
+      }
+    });
+
+    const unsubMetrics = subscribeToBodyMetrics(activeUser.id, (cloudMetrics) => {
+      if (cloudMetrics.length > 0) {
+        setBodyMetrics((prev) => {
+          const map = new Map<string, BodyMetric>();
+          prev.forEach((m) => map.set(m.id, m));
+          cloudMetrics.forEach((m) => map.set(m.id, m));
+          return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+        });
+        setLastCloudSyncTimestamp(Date.now());
+        setCloudSyncStatus('synced');
+      }
+    });
+
+    return () => {
+      unsubWorkouts();
+      unsubNutrition();
+      unsubMetrics();
+    };
+  }, [activeUser.id, isHydrated]);
+
+  const syncAllToCloud = async () => {
+    setCloudSyncStatus('syncing');
+    try {
+      await saveUserProfileCloud(activeUser.id, {
+        displayName: activeUser.displayName,
+        email: activeUser.email,
+        macroTargets: activeUser.macroTargets,
+      });
+      await saveCoachProfileCloud(activeUser.id, coachProfile);
+      await saveClientsCloud(activeUser.id, clients);
+      await saveSplitsCloud(activeUser.id, splits);
+      await savePrescribedArchetypesCloud(activeUser.id, prescribedArchetypes);
+      for (const log of workoutLogs.filter((l) => l.userId === activeUser.id)) {
+        await saveWorkoutLogCloud(activeUser.id, log);
+      }
+      for (const nLog of nutritionLogs.filter((l) => l.userId === activeUser.id)) {
+        await saveNutritionLogCloud(activeUser.id, nLog);
+      }
+      for (const metric of bodyMetrics.filter((m) => m.userId === activeUser.id)) {
+        await saveBodyMetricCloud(activeUser.id, metric);
+      }
+      setLastCloudSyncTimestamp(Date.now());
+      setCloudSyncStatus('synced');
+    } catch (e) {
+      console.warn('Manual cloud sync failed:', e);
+      setCloudSyncStatus('offline');
+    }
+  };
 
   const activeWeeklySchedule = userSchedules[activeUser.id] || initialAlexSchedule;
 
@@ -562,11 +889,13 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       id: `log_${Date.now()}`,
     };
     setWorkoutLogs((prev) => [log, ...prev]);
+    saveWorkoutLogCloud(log.userId, log).catch(() => {});
     return log;
   };
 
   const deleteWorkoutLog = (logId: string) => {
     setWorkoutLogs((prev) => prev.filter((l) => l.id !== logId));
+    deleteWorkoutLogCloud(activeUser.id, logId).catch(() => {});
   };
 
   const saveNutritionMeal = (date: string, mealData: Omit<Meal, 'id'>) => {
@@ -581,23 +910,28 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         (l) => l.userId === activeUser.id && l.date === date
       );
 
+      let targetLog: NutritionLog;
+      let updated: NutritionLog[];
+
       if (existingLogIndex >= 0) {
-        const updated = [...prev];
+        updated = [...prev];
         const currentLog = updated[existingLogIndex];
-        updated[existingLogIndex] = {
+        targetLog = {
           ...currentLog,
           meals: [...currentLog.meals, meal],
         };
-        return updated;
+        updated[existingLogIndex] = targetLog;
       } else {
-        const newLog: NutritionLog = {
+        targetLog = {
           id: `nut_${activeUser.id}_${date}`,
           userId: activeUser.id,
           date,
           meals: [meal],
         };
-        return [newLog, ...prev];
+        updated = [targetLog, ...prev];
       }
+      saveNutritionLogCloud(activeUser.id, targetLog).catch(() => {});
+      return updated;
     });
   };
 
@@ -605,6 +939,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     setNutritionLogs((prev) =>
       prev.map((l) => {
         if (l.userId === activeUser.id && l.date === date) {
+          deleteNutritionMealCloud(activeUser.id, date, mealId, l).catch(() => {});
           return {
             ...l,
             meals: l.meals.filter((m) => m.id !== mealId),
@@ -623,6 +958,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     } else if (partnerUser && activeUser.id === partnerUser.id) {
       setPartnerUser(updatedUser);
     }
+    saveUserProfileCloud(activeUser.id, { macroTargets: newTargets }).catch(() => {});
   };
 
   const updateUserName = (userId: string, newDisplayName: string) => {
@@ -637,6 +973,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     if (activeUser.id === userId) {
       setActiveUser((prev) => ({ ...prev, displayName: trimmed }));
     }
+    saveUserProfileCloud(userId, { displayName: trimmed }).catch(() => {});
   };
 
   const addBodyMetric = (
@@ -654,10 +991,12 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       skeletalMuscleMassKg,
     };
     setBodyMetrics((prev) => [metric, ...prev]);
+    saveBodyMetricCloud(activeUser.id, metric).catch(() => {});
   };
 
   const deleteBodyMetric = (metricId: string) => {
     setBodyMetrics((prev) => prev.filter((m) => m.id !== metricId));
+    deleteBodyMetricCloud(activeUser.id, metricId).catch(() => {});
   };
 
   const linkPartnerUser = (partnerName: string, partnerEmail: string) => {
@@ -676,6 +1015,55 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }));
   };
 
+  const updateCoachProfile = (profileUpdates: Partial<CoachProfile>) => {
+    setCoachProfile((prev) => ({ ...prev, ...profileUpdates }));
+  };
+
+  const addClient = (newClient: Omit<ClientProfile, 'id' | 'createdAt'>): ClientProfile => {
+    const client: ClientProfile = {
+      ...newClient,
+      id: `client_${Date.now()}`,
+      createdAt: Date.now(),
+    };
+    setClients((prev) => [client, ...prev]);
+    return client;
+  };
+
+  const updateClient = (client: ClientProfile) => {
+    setClients((prev) => prev.map((c) => (c.id === client.id ? client : c)));
+  };
+
+  const deleteClient = (clientId: string) => {
+    setClients((prev) => prev.filter((c) => c.id !== clientId));
+  };
+
+  const assignClientRoutine = (clientId: string, routineId: string, routineName: string) => {
+    setClients((prev) =>
+      prev.map((c) => {
+        if (c.id !== clientId) return c;
+        const ids = c.assignedRoutineIds.includes(routineId)
+          ? c.assignedRoutineIds
+          : [...c.assignedRoutineIds, routineId];
+        const names = c.assignedRoutineNames.includes(routineName)
+          ? c.assignedRoutineNames
+          : [...c.assignedRoutineNames, routineName];
+        return { ...c, assignedRoutineIds: ids, assignedRoutineNames: names };
+      })
+    );
+  };
+
+  const assignClientMacros = (clientId: string, targets: MacroTargets) => {
+    setClients((prev) =>
+      prev.map((c) => (c.id === clientId ? { ...c, macroTargets: targets } : c))
+    );
+  };
+
+  const assignClientArchetypes = (clientId: string, archetypes: PrescribedMealArchetype[]) => {
+    setClients((prev) =>
+      prev.map((c) => (c.id === clientId ? { ...c, prescribedArchetypes: archetypes } : c))
+    );
+  };
+
   const clearAllData = async () => {
     setWorkoutLogs([]);
     setNutritionLogs([]);
@@ -692,6 +1080,10 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         nutritionLogs: [],
         bodyMetrics: [],
         userSchedules,
+        userRole,
+        coachProfile,
+        clients,
+        prescribedArchetypes,
       });
     }
   };
@@ -711,6 +1103,10 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       user_alex: initialAlexSchedule,
       user_jordan: initialJordanSchedule,
     });
+    setUserRole('coach');
+    setCoachProfile(initialCoachProfile);
+    setClients(initialClients);
+    setPrescribedArchetypes(initialPrescribedArchetypes);
   };
 
   return (
@@ -729,6 +1125,19 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         weeklySchedule: activeWeeklySchedule,
         updateDaySchedule,
         shiftSplitSchedule,
+        userRole,
+        coachProfile,
+        clients,
+        prescribedArchetypes,
+        setUserRole,
+        updateCoachProfile,
+        addClient,
+        updateClient,
+        deleteClient,
+        assignClientRoutine,
+        assignClientMacros,
+        assignClientArchetypes,
+        setPrescribedArchetypes,
         switchActiveUser,
         addExercise,
         deleteExercise,
@@ -747,6 +1156,13 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         linkPartnerUser,
         clearAllData,
         resetAllDataToDefaults,
+        firebaseUser,
+        isAuthReady,
+        cloudSyncStatus,
+        lastCloudSyncTimestamp,
+        syncAllToCloud,
+        signOut,
+        continueAsGuest,
       }}
     >
       {children}

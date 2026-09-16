@@ -14,6 +14,8 @@ import * as Haptics from 'expo-haptics';
 
 import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
 import { Routine, MuscleGroup, Split } from '../src/types';
+import { ShareWorkoutModal } from '../src/components/workouts/ShareWorkoutModal';
+import { shareSplitCloud } from '../src/services/shareSplitService';
 
 const MUSCLE_GROUPS: MuscleGroup[] = [
   'Chest',
@@ -50,6 +52,34 @@ export default function CreateSplitScreen() {
 
   const existingSplit = splitId ? splits.find((s) => s.id === splitId) : null;
   const isEditing = Boolean(existingSplit);
+
+  // Share split state
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareCode, setShareCode] = useState<string | null>(null);
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+
+  const handleShareCurrentSplit = async () => {
+    if (!existingSplit) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShareCode(null);
+    setIsGeneratingShare(true);
+    setShowShareModal(true);
+
+    try {
+      const code = await shareSplitCloud(
+        existingSplit,
+        exercises,
+        activeUser.displayName,
+        activeUser.id
+      );
+      setShareCode(code);
+      setIsGeneratingShare(false);
+    } catch (err) {
+      console.warn('Failed to share split from editor:', err);
+      setIsGeneratingShare(false);
+      Alert.alert('Sharing Error', 'Could not generate share code. Check your network.');
+    }
+  };
 
   const [splitName, setSplitName] = useState('');
   const [routines, setRoutines] = useState<RoutineFormState[]>([
@@ -256,13 +286,24 @@ export default function CreateSplitScreen() {
       showsVerticalScrollIndicator={false}
     >
       {/* Screen Title & Persona Banner */}
-      <View className="mb-4">
-        <Text className="text-xl font-black text-white">
-          {isEditing ? 'Edit Workout Split' : 'Create Workout Split'}
-        </Text>
-        <Text className="text-xs text-zinc-400">
-          Configuring for <Text className="text-cyan-400 font-bold">{activeUser.displayName}</Text>
-        </Text>
+      <View className="flex-row items-center justify-between mb-4">
+        <View className="flex-1 pr-2">
+          <Text className="text-xl font-black text-white">
+            {isEditing ? 'Edit Workout Split' : 'Create Workout Split'}
+          </Text>
+          <Text className="text-xs text-zinc-400">
+            Configuring for <Text className="text-cyan-400 font-bold">{activeUser.displayName}</Text>
+          </Text>
+        </View>
+        {isEditing && existingSplit && (
+          <TouchableOpacity
+            onPress={handleShareCurrentSplit}
+            className="flex-row items-center bg-cyan-500/15 border border-cyan-500/40 px-3 py-1.5 rounded-xl"
+          >
+            <Ionicons name="share-social-outline" size={14} color="#06B6D4" />
+            <Text className="text-xs font-bold text-cyan-400 ml-1.5">Share Split</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Split Title Input */}
@@ -616,6 +657,23 @@ export default function CreateSplitScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Share Workout Split Modal */}
+      {existingSplit && (
+        <ShareWorkoutModal
+          visible={showShareModal}
+          onClose={() => setShowShareModal(false)}
+          shareCode={shareCode}
+          title={existingSplit.name}
+          type="split"
+          routinesCount={existingSplit.routines.length}
+          exercisesCount={existingSplit.routines.reduce(
+            (acc, r) => acc + (r.exerciseIds?.length || 0),
+            0
+          )}
+          isGenerating={isGeneratingShare}
+        />
+      )}
     </ScrollView>
   );
 }

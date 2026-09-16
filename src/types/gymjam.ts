@@ -1,3 +1,13 @@
+import {
+  CoachLogSetMessage,
+  SwapExerciseMessage,
+  SyncPresetsMessage,
+  PrescribedMealArchetype,
+  UserRole,
+} from './trainer';
+
+export * from './trainer';
+
 export type JamConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 export type JamRole = 'host' | 'guest';
 
@@ -9,6 +19,7 @@ export interface LogSetMessage {
   setIndex: number;
   weight: number;
   reps: number;
+  rpe?: number;
   timestamp: number;
 }
 
@@ -18,6 +29,7 @@ export interface SyncSessionMessage {
   exerciseIds: string[];
   hostUserId: string;
   hostUserName: string;
+  hostRole?: UserRole;
   timestamp: number;
 }
 
@@ -44,6 +56,31 @@ export interface StartTimerMessage {
   timestamp: number;
 }
 
+export interface AdvanceExerciseMessage {
+  type: 'ADVANCE_EXERCISE';
+  exerciseIndex: number;
+  exerciseId: string;
+  exerciseName: string;
+  initiatedBy: string;
+  timestamp: number;
+}
+
+export interface TurnSetMessage {
+  type: 'TURN_SET';
+  activeTurnUserId: string;
+  activeTurnUserName: string;
+  lastCompletedSet?: {
+    exerciseId: string;
+    setIndex: number;
+    weight: number;
+    reps: number;
+    rpe?: number;
+    completedBy: string;
+  };
+  restTimerSeconds?: number;
+  timestamp: number;
+}
+
 export interface PingMessage {
   type: 'PING';
   timestamp: number;
@@ -57,9 +94,14 @@ export interface PongMessage {
 export type JamMessage =
   | SyncSessionMessage
   | LogSetMessage
+  | CoachLogSetMessage
   | AddExerciseMessage
+  | SwapExerciseMessage
   | ReorderExerciseMessage
   | StartTimerMessage
+  | SyncPresetsMessage
+  | AdvanceExerciseMessage
+  | TurnSetMessage
   | PingMessage
   | PongMessage;
 
@@ -68,35 +110,6 @@ export interface JamLiveToast {
   message: string;
   userName: string;
   timestamp: number;
-}
-
-// -------------------------------------------------------------
-// Visual Barbell Plate Calculator Types
-// -------------------------------------------------------------
-export type PlateWeight = 25 | 20 | 15 | 10 | 5 | 2.5 | 1.25;
-
-export interface PlateDefinition {
-  weight: PlateWeight;
-  color: string;
-  borderColor: string;
-  textColor: string;
-  heightRatio: number; // Proportional height (0.0 to 1.0)
-  widthRatio: number;  // Visual width on barbell sleeve
-  label: string;
-}
-
-export interface PlateCount {
-  plate: PlateDefinition;
-  count: number;
-}
-
-export interface PlateCalculationResult {
-  targetWeight: number;
-  barWeight: number;
-  weightPerSide: number;
-  platesPerSide: PlateCount[];
-  remainderKg: number;
-  totalCalculatedWeight: number;
 }
 
 // -------------------------------------------------------------
@@ -111,6 +124,8 @@ export interface MealArchetype {
   carbs: number;
   fats: number;
   isCustom?: boolean;
+  prescribedBy?: string;
+  instructions?: string;
 }
 
 // -------------------------------------------------------------
@@ -132,6 +147,12 @@ export interface WorkoutReceiptData {
   gymJamBuddy?: {
     name: string;
     roomPin: string;
+    role?: 'coach' | 'athlete';
+  } | null;
+  coachAttribution?: {
+    name: string;
+    businessName?: string;
+    instagramHandle?: string;
   } | null;
   exercisesSummary: {
     exerciseName: string;

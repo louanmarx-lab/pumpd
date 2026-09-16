@@ -13,8 +13,12 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useUserWorkspace, DAYS_OF_WEEK } from '../../../src/context/UserWorkspaceContext';
-import { MuscleGroup, Exercise, DayOfWeek, DaySchedule, WorkoutLog } from '../../../src/types';
+import { MuscleGroup, Exercise, DayOfWeek, DaySchedule, WorkoutLog, Split, Routine } from '../../../src/types';
 import { calculate1RM } from '../../../src/utils/fitness';
+import { LogPastWorkoutModal } from '../../../src/components/workouts/LogPastWorkoutModal';
+import { ShareWorkoutModal } from '../../../src/components/workouts/ShareWorkoutModal';
+import { ImportWorkoutModal } from '../../../src/components/workouts/ImportWorkoutModal';
+import { shareSplitCloud, shareRoutineCloud } from '../../../src/services/shareSplitService';
 
 const formatDuration = (totalSec: number) => {
   const hrs = Math.floor(totalSec / 3600);
@@ -101,8 +105,87 @@ export default function WorkoutsScreen() {
   const [showShiftModal, setShowShiftModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
 
+  // Share & Import Modals
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [sharePayload, setSharePayload] = useState<{
+    code: string | null;
+    title: string;
+    type: 'split' | 'routine';
+    routinesCount: number;
+    exercisesCount: number;
+    isGenerating: boolean;
+  }>({
+    code: null,
+    title: '',
+    type: 'split',
+    routinesCount: 0,
+    exercisesCount: 0,
+    isGenerating: false,
+  });
+
+  const handleShareSplit = async (split: Split) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const totalExercises = (split.routines || []).reduce(
+      (acc, r) => acc + (r.exerciseIds?.length || 0),
+      0
+    );
+    setSharePayload({
+      code: null,
+      title: split.name,
+      type: 'split',
+      routinesCount: split.routines.length,
+      exercisesCount: totalExercises,
+      isGenerating: true,
+    });
+    setShowShareModal(true);
+
+    try {
+      const code = await shareSplitCloud(
+        split,
+        exercises,
+        activeUser.displayName,
+        activeUser.id
+      );
+      setSharePayload((prev) => ({ ...prev, code, isGenerating: false }));
+    } catch (err) {
+      console.warn('Failed to share split:', err);
+      setSharePayload((prev) => ({ ...prev, isGenerating: false }));
+      Alert.alert('Sharing Error', 'Could not generate share code. Check your network.');
+    }
+  };
+
+  const handleShareRoutine = async (routine: Routine, splitName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSharePayload({
+      code: null,
+      title: routine.name,
+      type: 'routine',
+      routinesCount: 1,
+      exercisesCount: routine.exerciseIds?.length || 0,
+      isGenerating: true,
+    });
+    setShowShareModal(true);
+
+    try {
+      const code = await shareRoutineCloud(
+        routine,
+        splitName,
+        exercises,
+        activeUser.displayName,
+        activeUser.id
+      );
+      setSharePayload((prev) => ({ ...prev, code, isGenerating: false }));
+    } catch (err) {
+      console.warn('Failed to share routine:', err);
+      setSharePayload((prev) => ({ ...prev, isGenerating: false }));
+      Alert.alert('Sharing Error', 'Could not generate share code. Check your network.');
+    }
+  };
+
   // Selected workout log for detailed inspection modal
   const [selectedWorkoutLog, setSelectedWorkoutLog] = useState<WorkoutLog | null>(null);
+  const [showLogPastWorkoutModal, setShowLogPastWorkoutModal] = useState(false);
 
   // Show only 3 latest workouts by default with show more toggle
   const [showAllWorkouts, setShowAllWorkouts] = useState(false);
@@ -519,25 +602,37 @@ export default function WorkoutsScreen() {
         </View>
       </View>
 
-      {/* 3. QUICK FREE TRAINING SESSION */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={() =>
-          handleStartWorkout('Quick Training Session', ['ex_1', 'ex_4', 'ex_8', 'ex_13'])
-        }
-        className="bg-zinc-800/80 border border-zinc-700 p-4 rounded-2xl mb-6 flex-row items-center justify-between shadow-lg"
-      >
-        <View className="flex-row items-center space-x-3">
-          <View className="w-12 h-12 rounded-xl bg-cyan-500/20 border border-cyan-500 items-center justify-center">
-            <Ionicons name="play-circle" size={26} color="#06B6D4" />
+      {/* 3. QUICK FREE TRAINING SESSION & LOG PAST WORKOUT */}
+      <View className="flex-row items-center space-x-3 mb-6">
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() =>
+            handleStartWorkout('Quick Training Session', ['ex_1', 'ex_4', 'ex_8', 'ex_13'])
+          }
+          className="flex-1 bg-zinc-800/80 border border-zinc-700 p-4 rounded-2xl shadow-lg"
+        >
+          <View className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500 items-center justify-center mb-2">
+            <Ionicons name="play-circle" size={22} color="#06B6D4" />
           </View>
-          <View>
-            <Text className="text-base font-bold text-white">Free Session Workout</Text>
-            <Text className="text-xs text-zinc-400">Log training without pre-set split</Text>
+          <Text className="text-sm font-bold text-white">Free Session</Text>
+          <Text className="text-[11px] text-zinc-400" numberOfLines={1}>Quick start</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setShowLogPastWorkoutModal(true);
+          }}
+          className="flex-1 bg-zinc-800/80 border border-zinc-700 p-4 rounded-2xl shadow-lg"
+        >
+          <View className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500 items-center justify-center mb-2">
+            <Ionicons name="calendar-outline" size={20} color="#10B981" />
           </View>
-        </View>
-        <Ionicons name="chevron-forward" size={20} color="#06B6D4" />
-      </TouchableOpacity>
+          <Text className="text-sm font-bold text-white">Log Past Workout</Text>
+          <Text className="text-[11px] text-zinc-400" numberOfLines={1}>Backdate session</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* 4. PREVIOUS WORKOUTS & HISTORY */}
       <View className="mb-6">
@@ -546,9 +641,21 @@ export default function WorkoutsScreen() {
             <Ionicons name="time-outline" size={20} color="#06B6D4" />
             <Text className="text-lg font-bold text-white">Previous Workouts</Text>
           </View>
-          <Text className="text-xs font-semibold text-zinc-400">
-            {userWorkoutLogs.length} Logged
-          </Text>
+          <View className="flex-row items-center space-x-2">
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowLogPastWorkoutModal(true);
+              }}
+              className="bg-cyan-950/60 border border-cyan-500/50 px-2.5 py-1 rounded-lg flex-row items-center space-x-1"
+            >
+              <Ionicons name="add" size={14} color="#06B6D4" />
+              <Text className="text-xs font-bold text-cyan-400">Log Past</Text>
+            </TouchableOpacity>
+            <Text className="text-xs font-semibold text-zinc-400">
+              {userWorkoutLogs.length} Logged
+            </Text>
+          </View>
         </View>
 
         {userWorkoutLogs.length === 0 ? (
@@ -627,13 +734,11 @@ export default function WorkoutsScreen() {
                       <Text className="text-xs text-zinc-300 font-medium">
                         <Text className="text-accent-cyan font-bold">{totalSets}</Text> Sets
                       </Text>
+                      {totalVolume > 0 && <Text className="text-zinc-600">•</Text>}
                       {totalVolume > 0 && (
-                        <>
-                          <Text className="text-zinc-600">•</Text>
-                          <Text className="text-xs text-zinc-400 font-medium">
-                            {totalVolume.toLocaleString()} kg
-                          </Text>
-                        </>
+                        <Text className="text-xs text-zinc-400 font-medium">
+                          {totalVolume.toLocaleString()} kg
+                        </Text>
                       )}
                     </View>
                     <View className="flex-row items-center space-x-1">
@@ -685,21 +790,37 @@ export default function WorkoutsScreen() {
               Active Workout Split
             </Text>
           </View>
-          <View className="flex-row items-center space-x-2">
+          <View className="flex-row items-center space-x-1.5">
+            <TouchableOpacity
+              onPress={() => setShowImportModal(true)}
+              className="flex-row items-center bg-cyan-500/10 border border-cyan-500/40 px-2 py-1.5 rounded-lg"
+            >
+              <Ionicons name="download-outline" size={13} color="#06B6D4" />
+              <Text className="text-xs font-semibold text-cyan-400 ml-1">Import</Text>
+            </TouchableOpacity>
             {activeSplit && (
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  router.push({
-                    pathname: '/create-split',
-                    params: { splitId: activeSplit.id },
-                  });
-                }}
-                className="flex-row items-center bg-zinc-800 border border-zinc-750 px-2.5 py-1.5 rounded-lg"
-              >
-                <Ionicons name="pencil" size={13} color="#E4E4E7" />
-                <Text className="text-xs font-semibold text-zinc-200 ml-1">Edit</Text>
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity
+                  onPress={() => handleShareSplit(activeSplit)}
+                  className="flex-row items-center bg-zinc-800 border border-zinc-750 px-2 py-1.5 rounded-lg"
+                >
+                  <Ionicons name="share-social-outline" size={13} color="#06B6D4" />
+                  <Text className="text-xs font-semibold text-cyan-400 ml-1">Share</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    router.push({
+                      pathname: '/create-split',
+                      params: { splitId: activeSplit.id },
+                    });
+                  }}
+                  className="flex-row items-center bg-zinc-800 border border-zinc-750 px-2 py-1.5 rounded-lg"
+                >
+                  <Ionicons name="pencil" size={13} color="#E4E4E7" />
+                  <Text className="text-xs font-semibold text-zinc-200 ml-1">Edit</Text>
+                </TouchableOpacity>
+              </>
             )}
             <TouchableOpacity
               onPress={() => router.push('/create-split')}
@@ -732,14 +853,24 @@ export default function WorkoutsScreen() {
                   </Text>
                 </View>
 
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => handleStartWorkout(routine.name, routine.exerciseIds)}
-                  className="bg-accent-cyan px-4 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-sm"
-                >
-                  <Ionicons name="play" size={16} color="#09090B" />
-                  <Text className="text-black font-extrabold text-xs">Start</Text>
-                </TouchableOpacity>
+                <View className="flex-row items-center space-x-1.5">
+                  <TouchableOpacity
+                    onPress={() => handleShareRoutine(routine, activeSplit.name)}
+                    className="bg-zinc-800 p-2.5 rounded-xl border border-zinc-750"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Ionicons name="share-social-outline" size={15} color="#06B6D4" />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => handleStartWorkout(routine.name, routine.exerciseIds)}
+                    className="bg-accent-cyan px-4 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-sm"
+                  >
+                    <Ionicons name="play" size={16} color="#09090B" />
+                    <Text className="text-black font-extrabold text-xs">Start</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             ))}
           </View>
@@ -795,6 +926,14 @@ export default function WorkoutsScreen() {
                       <Text className="text-xs font-bold text-cyan-400">Set Active</Text>
                     </TouchableOpacity>
                   )}
+
+                  <TouchableOpacity
+                    onPress={() => handleShareSplit(split)}
+                    className="bg-zinc-850 border border-zinc-750 p-2 rounded-lg"
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Ionicons name="share-social-outline" size={14} color="#06B6D4" />
+                  </TouchableOpacity>
 
                   <TouchableOpacity
                     onPress={() => {
@@ -1317,6 +1456,30 @@ export default function WorkoutsScreen() {
           </View>
         </SafeAreaView>
       </Modal>
+
+      {/* Log Past Workout Modal */}
+      <LogPastWorkoutModal
+        visible={showLogPastWorkoutModal}
+        onClose={() => setShowLogPastWorkoutModal(false)}
+      />
+
+      {/* Workout Split & Routine Share Modal */}
+      <ShareWorkoutModal
+        visible={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        shareCode={sharePayload.code}
+        title={sharePayload.title}
+        type={sharePayload.type}
+        routinesCount={sharePayload.routinesCount}
+        exercisesCount={sharePayload.exercisesCount}
+        isGenerating={sharePayload.isGenerating}
+      />
+
+      {/* Import Workout Split / Routine Modal */}
+      <ImportWorkoutModal
+        visible={showImportModal}
+        onClose={() => setShowImportModal(false)}
+      />
     </ScrollView>
   </View>
   );

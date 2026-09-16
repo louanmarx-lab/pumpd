@@ -22,9 +22,9 @@ import { SetType, SetLog, LoggedExercise, Exercise, MuscleGroup } from '../src/t
 import { calculate1RM, getExerciseHistory } from '../src/utils/fitness';
 import { useGymJam } from '../src/hooks/useGymJam';
 import { GymJamLobbyModal } from '../src/components/GymJamLobbyModal';
-import { PlateCalculatorModal } from '../src/components/PlateCalculatorModal';
 import { WorkoutReceiptModal } from '../src/components/WorkoutReceiptModal';
 import { WorkoutReceiptData } from '../src/types/gymjam';
+import { useWorkoutTimer, formatDuration } from '../src/hooks/useWorkoutTimer';
 
 const SET_TYPES: SetType[] = ['Normal', 'Warmup', 'Drop', 'Failure'];
 const MUSCLE_GROUPS: MuscleGroup[] = [
@@ -47,23 +47,35 @@ export default function ActiveSessionScreen() {
   const params = useLocalSearchParams<{
     splitId?: string;
     routineName?: string;
+    routineTitle?: string;
     exerciseIds?: string;
+    clientId?: string;
+    clientName?: string;
   }>();
 
   const {
     currentUser,
-    partnerUser,
     activeUser,
     activeWorkspace,
+    userRole,
+    coachProfile,
+    clients,
     exercises,
     workoutLogs,
     saveWorkoutLog,
     addExercise,
-    switchActiveUser,
   } = useUserWorkspace();
 
-  const routineTitle = params.routineName || 'Gym Workout Session';
-  const initialIds: string[] = params.exerciseIds ? JSON.parse(params.exerciseIds) : ['ex_1'];
+  const activeClient = params.clientId ? clients.find((c) => c.id === params.clientId) : null;
+  const routineTitle =
+    params.routineTitle ||
+    params.routineName ||
+    (params.clientName
+      ? `${params.clientName}'s Training`
+      : activeClient
+      ? `${activeClient.name}'s Training`
+      : 'Gym Workout Session');
+  const initialIds: string[] = params.exerciseIds ? JSON.parse(params.exerciseIds) : ['ex_1', 'ex_2'];
 
   // Helper to build initial exercises for a specific user using their own benchmark history
   const buildInitialExercisesForUser = (userId: string): LoggedExercise[] => {
@@ -110,17 +122,30 @@ export default function ActiveSessionScreen() {
   const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>('Chest');
   const [newExEquipment, setNewExEquipment] = useState('Barbell');
 
-  // Active workout timer (starts automatically on mount, stops on finish)
-  const [secondsElapsed, setSecondsElapsed] = useState<number>(0);
-  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
+  // Background-resilient workout timer (timestamp-delta architecture)
+  const workoutTimer = useWorkoutTimer({
+    autoStart: true,
+    storageKey: `@pumpd_active_workout_timer_${params.splitId || 'session'}`,
+  });
+  const secondsElapsed = workoutTimer.elapsedSeconds;
+  const isTimerRunning = workoutTimer.isRunning;
+  const { togglePauseResume: toggleWorkoutTimer, stop: stopWorkoutTimer } = workoutTimer;
+
+  // Synced Rest Countdown Timer State
+  const [restSecondsRemaining, setRestSecondsRemaining] = useState<number | null>(null);
 
   // Gym Jam P2P State & Handlers
   const [showGymJamLobby, setShowGymJamLobby] = useState(false);
-
-  // Plate Calculator Modal State
-  const [showPlateModal, setShowPlateModal] = useState(false);
-  const [plateTargetSet, setPlateTargetSet] = useState<{ exIdx: number; setIdx: number } | null>(null);
-  const [plateInitialWeight, setPlateInitialWeight] = useState<number>(60);
+  const [activeTurnUserId, setActiveTurnUserId] = useState<string>(activeUser.id);
+  const [activeTurnUserName, setActiveTurnUserName] = useState<string>(activeUser.displayName);
+  const [activeExerciseIndex, setActiveExerciseIndex] = useState<number>(0);
+  const [partnerLatestSet, setPartnerLatestSet] = useState<{
+    exerciseName?: string;
+    setIndex: number;
+    weight: number;
+    reps: number;
+    rpe?: number;
+  } | null>(null);
 
   // Workout Receipt Modal State
   const [showReceiptModal, setShowReceiptModal] = useState(false);
@@ -129,6 +154,7 @@ export default function ActiveSessionScreen() {
   const gymJam = useGymJam({
     currentUserId: activeUser.id,
     currentUserName: activeUser.displayName,
+    userRole,
     onSyncSessionReceived: (msg) => {
       // Synchronize routine title and exercises if guest
       if (msg.exerciseIds && msg.exerciseIds.length > 0) {
@@ -141,6 +167,14 @@ export default function ActiveSessionScreen() {
       }
     },
     onPartnerLoggedSet: (msg) => {
+      const exDef = exercises.find((e) => e.id === msg.exerciseId);
+      setPartnerLatestSet({
+        exerciseName: exDef ? exDef.name : undefined,
+        setIndex: msg.setIndex,
+        weight: msg.weight,
+        reps: msg.reps,
+        rpe: msg.rpe,
+      });
       setUserExercisesMap((prev) => {
         const next = { ...prev };
         const partnerList = next[msg.userId] ? [...next[msg.userId]] : buildInitialExercisesForUser(msg.userId);
@@ -154,6 +188,7 @@ export default function ActiveSessionScreen() {
               type: 'Normal',
               weightKg: msg.weight,
               reps: msg.reps,
+              rpe: msg.rpe,
               isCompleted: false,
             });
           }
@@ -161,6 +196,7 @@ export default function ActiveSessionScreen() {
             ...sets[msg.setIndex],
             weightKg: msg.weight,
             reps: msg.reps,
+            rpe: msg.rpe,
             isCompleted: true,
           };
           ex.sets = sets;
@@ -170,43 +206,120 @@ export default function ActiveSessionScreen() {
         return next;
       });
     },
+    onCoachLoggedSet: (msg) => {
+      // Remote-control logging from coach: client screen updates instantly with zero typing!
+      setUserExercisesMap((prev) => {
+        const next = { ...prev };
+        const myExercises = next[activeUser.id] ? [...next[activeUser.id]] : buildInitialExercisesForUser(activeUser.id);
+        const exIdx = myExercises.findIndex((e) => e.exerciseId === msg.exerciseId);
+        if (exIdx !== -1) {
+          const ex = { ...myExercises[exIdx] };
+          const sets = [...ex.sets];
+          while (sets.length <= msg.setIndex) {
+            sets.push({
+              setNumber: sets.length + 1,
+              type: 'Normal',
+              weightKg: msg.weight,
+              reps: msg.reps,
+              rpe: msg.rpe,
+              isCompleted: false,
+            });
+          }
+          sets[msg.setIndex] = {
+            ...sets[msg.setIndex],
+            weightKg: msg.weight,
+            reps: msg.reps,
+            rpe: msg.rpe,
+            isCompleted: true,
+          };
+          ex.sets = sets;
+          myExercises[exIdx] = ex;
+          next[activeUser.id] = myExercises;
+        }
+        return next;
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    },
     onExerciseAdded: (msg) => {
       const exDef = exercises.find((e) => e.id === msg.exerciseId);
       if (exDef) {
         handleAddExerciseToSession(exDef, false);
       }
     },
+    onExerciseSwapped: (msg) => {
+      const newDef = exercises.find((e) => e.id === msg.newExerciseId);
+      if (newDef) {
+        setUserExercisesMap((prev) => {
+          const next = { ...prev };
+          const current = next[activeUser.id] ? [...next[activeUser.id]] : [];
+          if (current[msg.exerciseIndex]) {
+            current[msg.exerciseIndex] = {
+              exerciseId: newDef.id,
+              exerciseName: newDef.name,
+              sets: current[msg.exerciseIndex].sets.map((s) => ({ ...s, isCompleted: false })),
+            };
+            next[activeUser.id] = current;
+          }
+          return next;
+        });
+      }
+    },
+    onAdvanceExercise: (msg) => {
+      setActiveExerciseIndex(msg.exerciseIndex);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    },
+    onTurnSet: (msg) => {
+      setActiveTurnUserId(msg.activeTurnUserId);
+      setActiveTurnUserName(msg.activeTurnUserName);
+      if (msg.restTimerSeconds) {
+        setRestSecondsRemaining(msg.restTimerSeconds);
+      }
+      if (msg.lastCompletedSet) {
+        const exDef = exercises.find((e) => e.id === msg.lastCompletedSet?.exerciseId);
+        setPartnerLatestSet({
+          exerciseName: exDef ? exDef.name : undefined,
+          setIndex: msg.lastCompletedSet.setIndex,
+          weight: msg.lastCompletedSet.weight,
+          reps: msg.lastCompletedSet.reps,
+          rpe: msg.lastCompletedSet.rpe,
+        });
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    },
+    onTimerSync: (msg) => {
+      setRestSecondsRemaining(msg.durationSeconds);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    },
   });
 
+  // Synced Rest Countdown Interval Effect
   useEffect(() => {
-    if (!isTimerRunning) return;
-    const timer = setInterval(() => {
-      setSecondsElapsed((prev) => prev + 1);
+    if (restSecondsRemaining === null || restSecondsRemaining <= 0) return;
+    const interval = setInterval(() => {
+      setRestSecondsRemaining((prev) => {
+        if (prev === null || prev <= 1) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          return null;
+        }
+        return prev - 1;
+      });
     }, 1000);
-    return () => clearInterval(timer);
-  }, [isTimerRunning]);
+    return () => clearInterval(interval);
+  }, [restSecondsRemaining]);
 
-  const formatDuration = (totalSec: number) => {
-    const hrs = Math.floor(totalSec / 3600);
-    const mins = Math.floor((totalSec % 3600) / 60);
-    const secs = totalSec % 60;
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    if (hrs > 0) {
-      return `${hrs}:${pad(mins)}:${pad(secs)}`;
-    }
-    return `${pad(mins)}:${pad(secs)}`;
+  const handleTriggerRestTimer = (seconds: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setRestSecondsRemaining(seconds);
+    gymJam.broadcastStartTimer(seconds);
   };
 
   // Initialize independent session exercise cards for both users
   useEffect(() => {
     const initialMap: Record<string, LoggedExercise[]> = {
-      [currentUser.id]: buildInitialExercisesForUser(currentUser.id),
+      [activeUser.id]: buildInitialExercisesForUser(activeUser.id),
     };
-    if (partnerUser) {
-      initialMap[partnerUser.id] = buildInitialExercisesForUser(partnerUser.id);
-    }
     setUserExercisesMap(initialMap);
-  }, []);
+  }, [activeUser.id]);
 
   // Get current active user's exercises
   const currentSessionExercises: LoggedExercise[] =
@@ -237,38 +350,90 @@ export default function ActiveSessionScreen() {
     });
   };
 
-  const openPlateCalculator = (exIdx: number, setIdx: number, currentWeight: number) => {
-    setPlateTargetSet({ exIdx, setIdx });
-    setPlateInitialWeight(currentWeight || 60);
-    setShowPlateModal(true);
-  };
-
-  const handleApplyPlateWeight = (newWeight: number) => {
-    if (plateTargetSet) {
-      handleUpdateSet(plateTargetSet.exIdx, plateTargetSet.setIdx, 'weightKg', newWeight);
-    }
+  const handleCycleRpe = (exIndex: number, setIndex: number, currentRpe?: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const rpeSequence = [7, 7.5, 8, 8.5, 9, 9.5, 10];
+    const currentIndex = currentRpe ? rpeSequence.indexOf(currentRpe) : -1;
+    const nextRpe =
+      currentIndex === -1 || currentIndex === rpeSequence.length - 1
+        ? rpeSequence[0]
+        : rpeSequence[currentIndex + 1];
+    handleUpdateSet(exIndex, setIndex, 'rpe', nextRpe);
   };
 
   const handleToggleComplete = (exIndex: number, setIndex: number) => {
     const currentCompleted = currentSessionExercises[exIndex]?.sets[setIndex]?.isCompleted || false;
     if (!currentCompleted) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      // If Gym Jam is connected, broadcast set completion
+      // If Gym Jam is connected, broadcast set completion and alternate turn!
       if (gymJam.connectionStatus === 'connected') {
         const currentSet = currentSessionExercises[exIndex]?.sets[setIndex];
         if (currentSet) {
-          gymJam.broadcastLogSet(
-            currentSessionExercises[exIndex].exerciseId,
-            setIndex,
-            currentSet.weightKg,
-            currentSet.reps
+          if (userRole === 'coach') {
+            // Coach remote logging on athlete's behalf
+            gymJam.broadcastCoachLogSet(
+              gymJam.partnerUserId || params.clientId || 'athlete',
+              currentSessionExercises[exIndex].exerciseId,
+              setIndex,
+              currentSet.weightKg,
+              currentSet.reps,
+              currentSet.rpe
+            );
+          } else {
+            gymJam.broadcastLogSet(
+              currentSessionExercises[exIndex].exerciseId,
+              setIndex,
+              currentSet.weightKg,
+              currentSet.reps,
+              currentSet.rpe
+            );
+          }
+
+          // Automatically alternate turn to partner and start rest timer
+          const nextUserId = gymJam.partnerUserId || 'partner';
+          const nextUserName = gymJam.partnerName || 'Gym Partner';
+          setActiveTurnUserId(nextUserId);
+          setActiveTurnUserName(nextUserName);
+          gymJam.broadcastTurnSet(
+            nextUserId,
+            nextUserName,
+            {
+              exerciseId: currentSessionExercises[exIndex].exerciseId,
+              setIndex,
+              weight: currentSet.weightKg,
+              reps: currentSet.reps,
+              rpe: currentSet.rpe,
+            },
+            90
           );
+          setRestSecondsRemaining(90);
         }
       }
     } else {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     handleUpdateSet(exIndex, setIndex, 'isCompleted', !currentCompleted);
+  };
+
+  const handlePassTurn = () => {
+    if (gymJam.connectionStatus !== 'connected') return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const isMyTurn = activeTurnUserId === activeUser.id;
+    const nextUserId = isMyTurn ? (gymJam.partnerUserId || 'partner') : activeUser.id;
+    const nextUserName = isMyTurn ? (gymJam.partnerName || 'Gym Partner') : activeUser.displayName;
+    setActiveTurnUserId(nextUserId);
+    setActiveTurnUserName(nextUserName);
+    gymJam.broadcastTurnSet(nextUserId, nextUserName);
+  };
+
+  const handleAdvanceExercise = (targetIndex: number) => {
+    if (targetIndex < 0 || targetIndex >= currentSessionExercises.length) return;
+    Haptics.selectionAsync();
+    setActiveExerciseIndex(targetIndex);
+    const targetEx = currentSessionExercises[targetIndex];
+    if (gymJam.connectionStatus === 'connected' && targetEx) {
+      gymJam.broadcastAdvanceExercise(targetIndex, targetEx.exerciseId, targetEx.exerciseName);
+    }
   };
 
   const handleAddSet = (exIndex: number) => {
@@ -309,6 +474,10 @@ export default function ActiveSessionScreen() {
 
   const handleSwapExercise = (newEx: Exercise) => {
     if (swapTargetIndex === null) return;
+    const oldEx = currentSessionExercises[swapTargetIndex];
+    if (gymJam.connectionStatus === 'connected' && userRole === 'coach' && oldEx) {
+      gymJam.broadcastSwapExercise(swapTargetIndex, oldEx.exerciseId, newEx.id, newEx.name);
+    }
     setUserExercisesMap((prev) => {
       const nextMap = { ...prev };
       Object.keys(nextMap).forEach((uId) => {
@@ -338,23 +507,19 @@ export default function ActiveSessionScreen() {
     }
     setUserExercisesMap((prev) => {
       const nextMap = { ...prev };
-      const userIds = Object.keys(nextMap);
-      if (!userIds.includes(currentUser.id)) userIds.push(currentUser.id);
-      if (partnerUser && !userIds.includes(partnerUser.id)) userIds.push(partnerUser.id);
-
-      userIds.forEach((uId) => {
-        const userList = nextMap[uId] ? [...nextMap[uId]] : buildInitialExercisesForUser(uId);
-        const newLoggedEx: LoggedExercise = {
-          exerciseId: ex.id,
-          exerciseName: ex.name,
-          sets: [
-            { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
-            { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
-            { setNumber: 3, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
-          ],
-        };
-        nextMap[uId] = [...userList, newLoggedEx];
-      });
+      const currentList = nextMap[activeUser.id]
+        ? [...nextMap[activeUser.id]]
+        : buildInitialExercisesForUser(activeUser.id);
+      const newLoggedEx: LoggedExercise = {
+        exerciseId: ex.id,
+        exerciseName: ex.name,
+        sets: [
+          { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
+          { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
+          { setNumber: 3, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
+        ],
+      };
+      nextMap[activeUser.id] = [...currentList, newLoggedEx];
       return nextMap;
     });
     setShowAddExerciseModal(false);
@@ -385,25 +550,13 @@ export default function ActiveSessionScreen() {
   };
 
   const handleFinishWorkout = () => {
-    const userIds = [currentUser.id];
-    if (partnerUser) userIds.push(partnerUser.id);
+    const activeExList = currentSessionExercises;
+    const completedSetsCount = activeExList.reduce(
+      (acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length,
+      0
+    );
 
-    const completedByUser: Record<string, number> = {};
-    const exercisesByUser: Record<string, LoggedExercise[]> = {};
-
-    userIds.forEach((uId) => {
-      const exList = userExercisesMap[uId] || [];
-      const completed = exList.reduce(
-        (acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length,
-        0
-      );
-      completedByUser[uId] = completed;
-      exercisesByUser[uId] = exList;
-    });
-
-    const totalCompletedAll = Object.values(completedByUser).reduce((a, b) => a + b, 0);
-
-    if (totalCompletedAll === 0) {
+    if (completedSetsCount === 0) {
       Alert.alert(
         'Empty Session',
         'Please complete at least one set before finishing the workout.',
@@ -413,31 +566,21 @@ export default function ActiveSessionScreen() {
     }
 
     const todayDate = new Date().toISOString().split('T')[0];
-    setIsTimerRunning(false);
+    const finalDurationSeconds = stopWorkoutTimer();
 
-    const savedSummaries: string[] = [];
-
-    userIds.forEach((uId) => {
-      if (completedByUser[uId] > 0) {
-        const profile = uId === currentUser.id ? currentUser : partnerUser;
-        saveWorkoutLog({
-          userId: uId,
-          workspaceId: activeWorkspace.id,
-          splitId: params.splitId || 'split_custom',
-          routineName: routineTitle,
-          date: todayDate,
-          timestamp: Date.now(),
-          durationSeconds: secondsElapsed,
-          exercises: exercisesByUser[uId],
-        });
-        if (profile) {
-          savedSummaries.push(`${profile.displayName} (${completedByUser[uId]} sets)`);
-        }
-      }
+    // Save workout log to the current authenticated user's profile
+    saveWorkoutLog({
+      userId: activeUser.id,
+      workspaceId: activeWorkspace.id,
+      splitId: params.splitId || 'split_custom',
+      routineName: routineTitle,
+      date: todayDate,
+      timestamp: Date.now(),
+      durationSeconds: finalDurationSeconds,
+      exercises: activeExList,
     });
 
     // Build Workout Receipt Data for the active lifter
-    const activeExList = exercisesByUser[activeUser.id] || [];
     let totalVolume = 0;
     let totalSets = 0;
     let totalReps = 0;
@@ -485,7 +628,7 @@ export default function ActiveSessionScreen() {
       id: `PMPD-${Math.floor(100000 + Math.random() * 900000)}`,
       date: todayDate,
       routineName: routineTitle,
-      durationSeconds: secondsElapsed,
+      durationSeconds: finalDurationSeconds,
       totalVolumeKg: Math.round(totalVolume),
       totalSets,
       totalReps,
@@ -496,12 +639,12 @@ export default function ActiveSessionScreen() {
               name: gymJam.partnerName,
               roomPin: gymJam.roomPin || '',
             }
-          : partnerUser && partnerUser.id !== currentUser.id
-          ? {
-              name: partnerUser.displayName,
-              roomPin: 'LOCAL-DUO',
-            }
           : null,
+      coachAttribution: {
+        name: coachProfile.name,
+        businessName: coachProfile.businessName,
+        instagramHandle: coachProfile.instagramHandle,
+      },
       exercisesSummary,
     });
 
@@ -525,13 +668,37 @@ export default function ActiveSessionScreen() {
               <Text className="text-sm font-bold text-white" numberOfLines={1}>
                 {routineTitle}
               </Text>
-              {/* Live Stopwatch Badge */}
-              <View className="flex-row items-center space-x-1 mt-0.5">
-                <Ionicons name="stopwatch" size={12} color="#06B6D4" />
-                <Text className="text-xs font-black text-accent-cyan font-mono">
+              {/* Live Stopwatch Badge with 1-Tap Pause/Resume */}
+              <TouchableOpacity
+                activeOpacity={0.75}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  toggleWorkoutTimer();
+                }}
+                className={`flex-row items-center space-x-1.5 mt-0.5 px-2 py-0.5 self-start rounded-md border ${
+                  isTimerRunning
+                    ? 'bg-cyan-950/40 border-cyan-500/40'
+                    : 'bg-amber-950/40 border-amber-500/50'
+                }`}
+              >
+                <Ionicons
+                  name={isTimerRunning ? 'stopwatch' : 'play'}
+                  size={12}
+                  color={isTimerRunning ? '#06B6D4' : '#F59E0B'}
+                />
+                <Text
+                  className={`text-xs font-black font-mono ${
+                    isTimerRunning ? 'text-accent-cyan' : 'text-amber-400'
+                  }`}
+                >
                   {formatDuration(secondsElapsed)}
                 </Text>
-              </View>
+                {!isTimerRunning && (
+                  <View className="bg-amber-500/20 px-1 py-0.2 rounded border border-amber-500/40">
+                    <Text className="text-[9px] font-extrabold text-amber-300">PAUSED</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -587,6 +754,63 @@ export default function ActiveSessionScreen() {
           </View>
         </View>
 
+        {/* Coach-as-Driver Session Bar */}
+        {(userRole === 'coach' || params.clientName || params.clientId) && (
+          <View className="bg-cyan-950/80 border-b border-cyan-500/40 px-3 py-2 flex-row items-center justify-between">
+            <View className="flex-row items-center space-x-1.5 flex-1 mr-2">
+              <View className="w-2 h-2 rounded-full bg-cyan-400" />
+              <Text className="text-[11px] font-black text-cyan-300" numberOfLines={1}>
+                COACH DRIVER: {params.clientName || gymJam.partnerName || 'Remote Athlete'}
+              </Text>
+            </View>
+
+            {/* Quick Rest Timer Triggers */}
+            <View className="flex-row items-center space-x-1">
+              <Text className="text-[10px] font-bold text-zinc-400 mr-0.5">Rest:</Text>
+              {[60, 90, 120].map((sec) => (
+                <TouchableOpacity
+                  key={`rest-${sec}`}
+                  onPress={() => handleTriggerRestTimer(sec)}
+                  className={`px-2 py-0.5 rounded-md border ${
+                    restSecondsRemaining === sec
+                      ? 'bg-cyan-400 border-cyan-300'
+                      : 'bg-zinc-800 border-zinc-700'
+                  }`}
+                >
+                  <Text
+                    className={`text-[10px] font-black ${
+                      restSecondsRemaining === sec ? 'text-black' : 'text-zinc-300'
+                    }`}
+                  >
+                    {sec}s
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Synced Rest Timer Countdown Banner */}
+        {restSecondsRemaining !== null && restSecondsRemaining > 0 && (
+          <View className="bg-amber-500/15 border-b border-amber-500/40 px-3 py-1.5 flex-row items-center justify-between">
+            <View className="flex-row items-center space-x-1.5">
+              <Ionicons name="timer-outline" size={14} color="#F59E0B" />
+              <Text className="text-xs font-bold text-amber-300">Synced Rest Interval</Text>
+            </View>
+            <View className="flex-row items-center space-x-2">
+              <Text className="text-sm font-black font-mono text-amber-400">
+                {restSecondsRemaining}s
+              </Text>
+              <TouchableOpacity
+                onPress={() => setRestSecondsRemaining(null)}
+                className="bg-amber-500/20 px-1.5 py-0.5 rounded"
+              >
+                <Text className="text-[9px] font-bold text-amber-300">Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Gym Jam Live Feed Toast Notification */}
         {gymJam.liveToasts.length > 0 && (
           <View className="px-3 pt-2">
@@ -603,71 +827,57 @@ export default function ActiveSessionScreen() {
           </View>
         )}
 
-        {/* Partner Duo Turn Bar */}
-        {partnerUser && (
-          <View className="bg-zinc-900 border-b border-zinc-800 px-3 py-2 flex-row items-center justify-between">
-            <View className="flex-row items-center space-x-1.5">
-              <Ionicons name="barbell" size={14} color="#06B6D4" />
-              <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
-                Whose Turn:
-              </Text>
-            </View>
-
-            <View className="flex-row bg-zinc-950 p-0.5 rounded-xl border border-zinc-800">
-              <TouchableOpacity
-                onPress={() => {
-                  if (activeUser.id !== currentUser.id) {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    switchActiveUser(currentUser.id);
-                  }
-                }}
-                className={`flex-row items-center px-3 py-1.5 rounded-lg ${
-                  activeUser.id === currentUser.id ? 'bg-cyan-500' : 'bg-transparent'
-                }`}
-              >
-                <Ionicons
-                  name="person"
-                  size={12}
-                  color={activeUser.id === currentUser.id ? '#000000' : '#71717A'}
-                />
-                <Text
-                  className={`text-xs ml-1.5 ${
-                    activeUser.id === currentUser.id
-                      ? 'text-black font-extrabold'
-                      : 'text-zinc-400 font-semibold'
+        {/* Gym Jam Live Co-Op Turn Control & Partner HUD */}
+        {gymJam.connectionStatus === 'connected' && (
+          <View className="bg-zinc-900 border-b border-zinc-800 px-3 py-2.5">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-row items-center space-x-2 flex-1 mr-2">
+                <View
+                  className={`w-3 h-3 rounded-full ${
+                    activeTurnUserId === activeUser.id ? 'bg-emerald-400' : 'bg-cyan-400'
                   }`}
-                >
-                  {currentUser.displayName.split(' ')[0]} ({getCompletedCountForUser(currentUser.id)} sets)
-                </Text>
-              </TouchableOpacity>
+                />
+                <View className="flex-1">
+                  <Text className="text-xs font-black text-white">
+                    {activeTurnUserId === activeUser.id
+                      ? '🎯 YOUR TURN TO LIFT!'
+                      : `⏳ ${activeTurnUserName || gymJam.partnerName || 'Partner'}'s TURN`}
+                  </Text>
+                  <Text className="text-[10px] text-zinc-400">
+                    {activeTurnUserId === activeUser.id
+                      ? 'Perform your set and check it off to alternate turns'
+                      : 'Catch your breath and spot your partner'}
+                  </Text>
+                </View>
+              </View>
 
               <TouchableOpacity
-                onPress={() => {
-                  if (activeUser.id !== partnerUser.id) {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    switchActiveUser(partnerUser.id);
-                  }
-                }}
-                className={`flex-row items-center px-3 py-1.5 rounded-lg ${
-                  activeUser.id === partnerUser.id ? 'bg-purple-500' : 'bg-transparent'
-                }`}
+                onPress={handlePassTurn}
+                className="bg-zinc-800 border border-zinc-700 px-2.5 py-1.5 rounded-lg flex-row items-center space-x-1"
               >
-                <Ionicons
-                  name="person"
-                  size={12}
-                  color={activeUser.id === partnerUser.id ? '#FFFFFF' : '#71717A'}
-                />
-                <Text
-                  className={`text-xs ml-1.5 ${
-                    activeUser.id === partnerUser.id
-                      ? 'text-white font-extrabold'
-                      : 'text-zinc-400 font-semibold'
-                  }`}
-                >
-                  {partnerUser.displayName.split(' ')[0]} ({getCompletedCountForUser(partnerUser.id)} sets)
+                <Ionicons name="swap-horizontal" size={12} color="#06B6D4" />
+                <Text className="text-[10px] font-bold text-cyan-300">
+                  {activeTurnUserId === activeUser.id ? 'Pass Turn' : 'Take Turn'}
                 </Text>
               </TouchableOpacity>
             </View>
+
+            {/* Partner Latest Set Badge */}
+            {partnerLatestSet && (
+              <View className="mt-2 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 flex-row items-center justify-between">
+                <View className="flex-row items-center space-x-1.5">
+                  <Ionicons name="checkmark-circle" size={13} color="#10B981" />
+                  <Text className="text-[11px] font-medium text-zinc-300">
+                    {gymJam.partnerName || 'Partner'} logged Set {partnerLatestSet.setIndex + 1}:{' '}
+                    <Text className="font-bold text-emerald-400">
+                      {partnerLatestSet.weight}kg × {partnerLatestSet.reps}
+                    </Text>
+                    {partnerLatestSet.rpe ? ` @ RPE ${partnerLatestSet.rpe}` : ''}
+                  </Text>
+                </View>
+                <Text className="text-[9px] font-mono text-zinc-500">SYNCED</Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -690,33 +900,19 @@ export default function ActiveSessionScreen() {
                     <Text className="text-lg font-bold text-white">{exItem.exerciseName}</Text>
                     <View className="flex-row items-center mt-0.5">
                       <Text className="text-xs text-zinc-400">Lifter: </Text>
-                      <View
-                        className={`px-2 py-0.5 rounded-full ${
-                          partnerUser && activeUser.id === partnerUser.id
-                            ? 'bg-purple-500/20 border border-purple-500/50'
-                            : 'bg-cyan-500/20 border border-cyan-500/50'
-                        }`}
-                      >
-                        <Text
-                          className={`text-[11px] font-bold ${
-                            partnerUser && activeUser.id === partnerUser.id
-                              ? 'text-purple-300'
-                              : 'text-cyan-300'
-                          }`}
-                        >
+                      <View className="px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/50">
+                        <Text className="text-[11px] font-bold text-cyan-300">
                           {activeUser.displayName}
                         </Text>
                       </View>
+                      {gymJam.connectionStatus === 'connected' && (
+                        <Text className="text-[11px] text-zinc-400 font-semibold ml-1.5">
+                          • Jam with {gymJam.partnerName || 'Partner'}
+                        </Text>
+                      )}
                     </View>
                   </View>
                   <View className="flex-row items-center space-x-1.5">
-                    <TouchableOpacity
-                      onPress={() => openPlateCalculator(exIdx, 0, exItem.sets[0]?.weightKg || 60)}
-                      className="bg-cyan-500/15 border border-cyan-500/40 px-2 py-1.5 rounded-lg flex-row items-center space-x-1"
-                    >
-                      <Ionicons name="barbell-outline" size={13} color="#06B6D4" />
-                      <Text className="text-[11px] text-cyan-300 font-bold">Plates</Text>
-                    </TouchableOpacity>
 
                     <TouchableOpacity
                       onPress={() => {
@@ -784,6 +980,7 @@ export default function ActiveSessionScreen() {
                   <Text className="w-20 text-[11px] font-bold text-zinc-500 text-center">TYPE</Text>
                   <Text className="flex-1 text-[11px] font-bold text-zinc-500 text-center">KG</Text>
                   <Text className="flex-1 text-[11px] font-bold text-zinc-500 text-center">REPS</Text>
+                  <Text className="w-12 text-[11px] font-bold text-zinc-500 text-center">RPE</Text>
                   <Text className="w-12 text-[11px] font-bold text-zinc-500 text-center">DONE</Text>
                 </View>
 
@@ -842,8 +1039,8 @@ export default function ActiveSessionScreen() {
                         </Text>
                       </TouchableOpacity>
 
-                      {/* Weight Input + Plate Calculator Trigger */}
-                      <View className="flex-1 mx-1 flex-row items-center">
+                      {/* Weight Input */}
+                      <View className="flex-1 mx-1">
                         <TextInput
                           keyboardType="numeric"
                           value={set.weightKg.toString()}
@@ -855,14 +1052,8 @@ export default function ActiveSessionScreen() {
                               parseFloat(text) || 0
                             )
                           }
-                          className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-1 rounded-l-lg font-bold text-sm flex-1"
+                          className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-1 rounded-lg font-bold text-sm"
                         />
-                        <TouchableOpacity
-                          onPress={() => openPlateCalculator(exIdx, setIdx, set.weightKg)}
-                          className="bg-zinc-850 border-y border-r border-zinc-700 py-2 px-1.5 rounded-r-lg items-center justify-center"
-                        >
-                          <Ionicons name="barbell-outline" size={13} color="#06B6D4" />
-                        </TouchableOpacity>
                       </View>
 
                       {/* Reps Input */}
@@ -876,6 +1067,25 @@ export default function ActiveSessionScreen() {
                           className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-2 rounded-lg font-bold text-sm"
                         />
                       </View>
+
+                      {/* RPE Selector Chip */}
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => handleCycleRpe(exIdx, setIdx, set.rpe)}
+                        className={`w-12 h-9 rounded-lg border mx-0.5 items-center justify-center ${
+                          set.rpe
+                            ? 'bg-cyan-500/15 border-cyan-500/50'
+                            : 'bg-zinc-950 border-zinc-800'
+                        }`}
+                      >
+                        <Text
+                          className={`text-[10px] font-black font-mono ${
+                            set.rpe ? 'text-cyan-300' : 'text-zinc-500'
+                          }`}
+                        >
+                          {set.rpe ? `@${set.rpe}` : '—'}
+                        </Text>
+                      </TouchableOpacity>
 
                       {/* Checkbox Trigger with Haptics */}
                       <TouchableOpacity
@@ -904,6 +1114,23 @@ export default function ActiveSessionScreen() {
                   <Ionicons name="add" size={16} color="#06B6D4" />
                   <Text className="text-xs font-bold text-cyan-400">+ Add Working Set</Text>
                 </TouchableOpacity>
+
+                {/* Advance Exercise Button (Syncs with Partner) */}
+                {exIdx < currentSessionExercises.length - 1 ? (
+                  <TouchableOpacity
+                    onPress={() => handleAdvanceExercise(exIdx + 1)}
+                    className="bg-zinc-850 border border-zinc-700 py-2.5 rounded-xl items-center flex-row justify-center space-x-1.5 mt-2"
+                  >
+                    <Ionicons name="arrow-forward-circle" size={16} color="#06B6D4" />
+                    <Text className="text-xs font-bold text-zinc-300">
+                      Advance to Next: {currentSessionExercises[exIdx + 1]?.exerciseName} ⏩
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View className="py-2 mt-1 items-center">
+                    <Text className="text-[11px] font-bold text-zinc-500">🏁 Final exercise in routine</Text>
+                  </View>
+                )}
               </View>
             );
           })}
@@ -1132,6 +1359,8 @@ export default function ActiveSessionScreen() {
           roomPin={gymJam.roomPin}
           role={gymJam.role}
           partnerName={gymJam.partnerName}
+          isWebRTC={gymJam.isWebRTC}
+          onSimulatePartner={() => gymJam.simulatePartnerJoin('Jordan (Partner)')}
           onHostSession={() => {
             gymJam.hostRoom({
               routineName: routineTitle,
@@ -1145,14 +1374,6 @@ export default function ActiveSessionScreen() {
           onStartSession={() => setShowGymJamLobby(false)}
         />
 
-        {/* Barbell Plate Calculator Modal */}
-        <PlateCalculatorModal
-          visible={showPlateModal}
-          onClose={() => setShowPlateModal(false)}
-          initialWeight={plateInitialWeight}
-          lifterName={activeUser.displayName}
-          onApplyWeight={handleApplyPlateWeight}
-        />
 
         {/* Aesthetic Shareable Workout Receipt Modal */}
         <WorkoutReceiptModal

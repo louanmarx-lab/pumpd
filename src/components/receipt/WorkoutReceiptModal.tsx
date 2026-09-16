@@ -1,0 +1,1 @@
+export { WorkoutReceiptModal } from '../WorkoutReceiptModal';

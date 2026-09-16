@@ -16,6 +16,7 @@ export interface MacroTargets {
   protein: number;
   carbs: number;
   fats: number;
+  dailyProteinGoalGrams?: number;
 }
 
 export type DayOfWeek =
@@ -69,6 +70,7 @@ export interface Split {
   id: string;
   userId: string;
   name: string;
+  description?: string;
   routines: Routine[];
   isActive: boolean;
 }
@@ -78,6 +80,7 @@ export interface SetLog {
   type: SetType;
   weightKg: number;
   reps: number;
+  rpe?: number;
   isCompleted: boolean;
 }
 
@@ -137,3 +140,5 @@ export interface HistoricalBenchmark {
     date?: string;
   };
 }
+
+export * from './workoutTimer';

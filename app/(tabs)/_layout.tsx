@@ -4,9 +4,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { HeaderSwitcher } from '../../components/HeaderSwitcher';
 import { View, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useUserWorkspace } from '../../src/context/UserWorkspaceContext';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const { userRole } = useUserWorkspace();
   // Safe bottom padding for Samsung 3-button navigation, gesture pill, and iOS home bar
   const safeBottom = Math.max(insets.bottom, Platform.OS === 'android' ? 14 : 8);
 
@@ -46,11 +48,13 @@ export default function TabsLayout() {
         },
       }}
     >
+      {/* ATHLETE TABS */}
       <Tabs.Screen
         name="workouts"
         options={{
           title: 'Workouts',
           headerTitle: 'Pumpd',
+          href: userRole === 'athlete' ? '/workouts' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="barbell-outline" size={size} color={color} />,
         }}
       />
@@ -59,6 +63,7 @@ export default function TabsLayout() {
         options={{
           title: 'Nutrition',
           headerTitle: 'Macro Tracker',
+          href: userRole === 'athlete' ? '/nutrition' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="nutrition-outline" size={size} color={color} />,
         }}
       />
@@ -67,14 +72,55 @@ export default function TabsLayout() {
         options={{
           title: 'Analytics',
           headerTitle: 'Progress & Benchmarks',
+          href: userRole === 'athlete' ? '/analytics' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="stats-chart-outline" size={size} color={color} />,
         }}
       />
+
+      {/* COACH CRM TABS */}
+      <Tabs.Screen
+        name="clients"
+        options={{
+          title: 'Clients',
+          headerTitle: 'Client Roster',
+          href: userRole === 'coach' ? '/clients' : null,
+          tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="programs"
+        options={{
+          title: 'Programs',
+          headerTitle: 'Program Library',
+          href: userRole === 'coach' ? '/programs' : null,
+          tabBarIcon: ({ color, size }) => <Ionicons name="barbell" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="meal-plans"
+        options={{
+          title: 'Meals',
+          headerTitle: 'Meal Plans & Diets',
+          href: userRole === 'coach' ? '/meal-plans' : null,
+          tabBarIcon: ({ color, size }) => <Ionicons name="restaurant-outline" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="activity"
+        options={{
+          title: 'Activity',
+          headerTitle: 'Client Activity Feed',
+          href: userRole === 'coach' ? '/activity' : null,
+          tabBarIcon: ({ color, size }) => <Ionicons name="pulse-outline" size={size} color={color} />,
+        }}
+      />
+
+      {/* SHARED SETTINGS TAB */}
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          headerTitle: 'Workspace & Profile',
+          headerTitle: userRole === 'coach' ? 'Coach Profile & Business' : 'Profile & Mode',
           tabBarIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size} color={color} />,
         }}
       />

@@ -23,8 +23,10 @@ interface GymJamLobbyModalProps {
   roomPin: string | null;
   role: JamRole | null;
   partnerName: string | null;
+  isWebRTC?: boolean;
   onHostSession: () => void;
   onJoinSession: (pin: string) => Promise<boolean>;
+  onSimulatePartner?: () => void;
   onDisconnect: () => void;
   onStartSession: () => void;
 }
@@ -36,8 +38,10 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
   roomPin,
   role,
   partnerName,
+  isWebRTC = true,
   onHostSession,
   onJoinSession,
+  onSimulatePartner,
   onDisconnect,
   onStartSession,
 }) => {
@@ -68,7 +72,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
   const handleJoin = async () => {
     const clean = pinInput.trim().toUpperCase();
     if (!clean) {
-      Alert.alert('Missing PIN', 'Please enter a 4-digit room code.');
+      Alert.alert('Missing Code', 'Please enter the room code (e.g. PUMP-42 or 42).');
       return;
     }
 
@@ -82,7 +86,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
     } else {
       Alert.alert(
         'Connection Failed',
-        'Could not reach room. Make sure the host has the lobby open and your 4-digit PIN is correct.'
+        'Could not reach room. Make sure the host has the lobby open and your code is correct.'
       );
     }
   };
@@ -102,8 +106,8 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
               </View>
               <View>
                 <Text className="text-lg font-black text-white">Gym Jam Co-Op</Text>
-                <Text className="text-[10px] font-semibold text-zinc-400">
-                  Real-time Serverless WebRTC P2P
+                <Text className="text-[10px] font-semibold text-accent-cyan">
+                  Real-Time Cloud Co-Op (Cross-Device)
                 </Text>
               </View>
             </View>
@@ -117,6 +121,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false} className="mt-4">
+
             {/* Active Connected State Banner */}
             {connectionStatus === 'connected' ? (
               <View className="bg-emerald-500/10 border border-emerald-500/40 rounded-2xl p-4 mb-4 items-center">
@@ -127,7 +132,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                   Lifting with {partnerName || 'Gym Partner'}
                 </Text>
                 <Text className="text-xs font-mono font-bold text-emerald-400">
-                  Room: {roomPin} • WebRTC Data Connected
+                  Room: {roomPin} • Co-Op Session Active
                 </Text>
 
                 <View className="flex-row space-x-3 w-full mt-4">
@@ -209,7 +214,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                     {/* Short Room PIN Display */}
                     <View className="flex-row items-center space-x-2 my-2 bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-xl">
                       <Text className="text-2xl font-mono font-black text-accent-cyan tracking-widest">
-                        {roomPin || 'JAM-....'}
+                        {roomPin || 'PUMP-..'}
                       </Text>
                       <TouchableOpacity
                         onPress={handleSharePin}
@@ -233,13 +238,13 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                 {activeTab === 'join' && (
                   <View className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5 mb-3">
                     <Text className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2">
-                      Enter Host's 4-Digit Room PIN
+                      Enter Host's Room Code
                     </Text>
 
                     <TextInput
                       value={pinInput}
                       onChangeText={(val) => setPinInput(val.toUpperCase())}
-                      placeholder="JAM-1234 or 1234"
+                      placeholder="PUMP-42 or 42"
                       placeholderTextColor="#52525B"
                       autoCapitalize="characters"
                       className="bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3.5 text-2xl font-mono font-black text-accent-cyan text-center mb-4 tracking-widest"
@@ -263,9 +268,9 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
             {/* Protocol Explanation Footer */}
             <View className="bg-zinc-900/40 rounded-xl p-3 border border-zinc-850 my-2">
               <Text className="text-[11px] text-zinc-400 leading-relaxed">
-                💡 <Text className="font-bold text-zinc-300">P2P Serverless Co-Logging:</Text>{' '}
-                Both lifters see each other's live sets, share active exercise queues, and synchronize
-                rest timer countdowns via encrypted browser-to-browser WebRTC channels.
+                💡 <Text className="font-bold text-zinc-300">Cloud Real-Time Co-Op:</Text>{' '}
+                Both lifters take turns performing sets, synchronize rest timers, and advance exercises
+                together across devices in real time.
               </Text>
             </View>
           </ScrollView>

@@ -1,27 +1,60 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { initializeFirestore, persistentLocalCache, getFirestore, Firestore } from 'firebase/firestore';
+// @ts-ignore
+import { initializeAuth, getReactNativePersistence, getAuth } from 'firebase/auth';
+import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Default Firebase configuration using environment variables or fallback values
-const firebaseConfig = {
-  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "AIzaSyPumpdDemoApiKeyForLocalDevelopment123",
-  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || "pumpd-app.firebaseapp.com",
-  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || "pumpd-app",
-  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || "pumpd-app.appspot.com",
-  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "100000000000",
-  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID || "1:100000000000:web:pumpdappdemo123456",
+export const firebaseConfig = {
+  apiKey: 'AIzaSyAksUKu-5ntNqhOfn_Slsv61TDNJj649q0',
+  authDomain: 'ripped-a5726.firebaseapp.com',
+  projectId: 'ripped-a5726',
+  storageBucket: 'ripped-a5726.firebasestorage.app',
+  messagingSenderId: '699479728909',
+  appId: '1:699479728909:android:cbc33ec0b79605532d0644',
 };
 
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// Initialize or reuse existing Firebase App
+export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-let db: Firestore;
+// Initialize Firebase Auth with React Native AsyncStorage persistence
+let authInstance: ReturnType<typeof getAuth>;
 try {
-  // Initialize Firestore with offline persistence enabled
-  db = initializeFirestore(app, {
-    localCache: persistentLocalCache(),
-  });
-} catch (e) {
-  // Return existing firestore instance if already initialized
-  db = getFirestore(app);
-}
+  const persistence =
+    typeof getReactNativePersistence === 'function'
+      ? getReactNativePersistence(AsyncStorage)
+      : undefined;
 
-export { app, db };
+  authInstance = initializeAuth(app, persistence ? { persistence } : {});
+} catch (e) {
+  try {
+    authInstance = getAuth(app);
+  } catch (err) {
+    console.warn('[Firebase] Auth initialization fallback:', err);
+    try {
+      authInstance = initializeAuth(app);
+    } catch {
+      authInstance = { app } as any;
+    }
+  }
+}
+export const auth = authInstance;
+
+// Initialize Cloud Firestore safely
+let dbInstance: ReturnType<typeof getFirestore>;
+try {
+  dbInstance = initializeFirestore(app, {});
+} catch (e) {
+  try {
+    dbInstance = getFirestore(app);
+  } catch (err) {
+    console.warn('[Firebase] Firestore fallback:', err);
+    dbInstance = {} as any;
+  }
+}
+export const db = dbInstance;
+
+// Initialize Cloud Storage
+export const storage = getStorage(app);
+
+export default { app, auth, db, storage };

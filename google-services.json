@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "699479728909",
+    "project_id": "ripped-a5726",
+    "storage_bucket": "ripped-a5726.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:699479728909:android:cbc33ec0b79605532d0644",
+        "android_client_info": {
+          "package_name": "com.multiplier.ripped"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAksUKu-5ntNqhOfn_Slsv61TDNJj649q0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

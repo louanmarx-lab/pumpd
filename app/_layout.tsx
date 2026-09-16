@@ -34,14 +34,6 @@ export default function RootLayout() {
             headerStyle: { backgroundColor: '#18181B' },
           }}
         />
-        <Stack.Screen
-          name="add-exercise"
-          options={{
-            presentation: 'modal',
-            title: 'Custom Exercise',
-            headerStyle: { backgroundColor: '#18181B' },
-          }}
-        />
       </Stack>
     </UserWorkspaceProvider>
   );

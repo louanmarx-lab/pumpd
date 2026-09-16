@@ -19,6 +19,7 @@ import {
   getExerciseProgression,
 } from '../../../src/utils/fitness';
 import { MuscleGroup, WorkoutLog, Exercise } from '../../../src/types';
+import { LogPastWorkoutModal } from '../../../src/components/workouts/LogPastWorkoutModal';
 
 type AnalyticsTab = 'calendar' | 'progress' | 'body';
 type BodyMetricType = 'weight' | 'bodyFat' | 'muscle';
@@ -82,6 +83,7 @@ export default function AnalyticsScreen() {
   const [calYear, setCalYear] = useState<number>(today.getFullYear());
   const [calMonth, setCalMonth] = useState<number>(today.getMonth());
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const [showBackdateWorkoutModal, setShowBackdateWorkoutModal] = useState(false);
 
   // Quick toggle between active persona and partner in Calendar view
   const [calendarUserId, setCalendarUserId] = useState<string>(activeUser.id);
@@ -219,6 +221,8 @@ export default function AnalyticsScreen() {
   const [newWeight, setNewWeight] = useState('');
   const [newBodyFat, setNewBodyFat] = useState('');
   const [newMuscleMass, setNewMuscleMass] = useState('');
+  const [weighInDateOption, setWeighInDateOption] = useState<'today' | 'yesterday' | 'custom'>('today');
+  const [customWeighInDate, setCustomWeighInDate] = useState(todayStr);
 
   const userMetrics = useMemo(() => {
     return bodyMetrics
@@ -235,11 +239,19 @@ export default function AnalyticsScreen() {
     const bf = newBodyFat ? parseFloat(newBodyFat) : undefined;
     const smm = newMuscleMass ? parseFloat(newMuscleMass) : undefined;
 
-    addBodyMetric(w, bf, smm);
+    const targetDate =
+      weighInDateOption === 'today'
+        ? todayStr
+        : weighInDateOption === 'yesterday'
+        ? formatDateToISO(new Date(Date.now() - 86400000))
+        : customWeighInDate.trim() || todayStr;
+
+    addBodyMetric(w, bf, smm, targetDate);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setNewWeight('');
     setNewBodyFat('');
     setNewMuscleMass('');
+    setWeighInDateOption('today');
     setShowWeightModal(false);
   };
 
@@ -677,6 +689,18 @@ export default function AnalyticsScreen() {
                   <Text className="text-xs text-zinc-500 mt-1 text-center">
                     No workouts logged for {inspectedUserName} on {selectedDate}.
                   </Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setShowBackdateWorkoutModal(true);
+                    }}
+                    className="mt-4 bg-cyan-950/60 border border-cyan-500/50 px-4 py-2.5 rounded-xl flex-row items-center space-x-2"
+                  >
+                    <Ionicons name="calendar-outline" size={16} color="#06B6D4" />
+                    <Text className="text-xs font-bold text-cyan-400">
+                      Backdate Workout for {selectedDate}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -1293,6 +1317,74 @@ export default function AnalyticsScreen() {
               </TouchableOpacity>
             </View>
 
+            {/* Date Selection */}
+            <Text className="text-xs text-zinc-300 font-bold mb-2">Weigh-In Date</Text>
+            <View className="flex-row space-x-2 mb-3">
+              <TouchableOpacity
+                onPress={() => setWeighInDateOption('today')}
+                className={`flex-1 py-2 rounded-xl items-center border ${
+                  weighInDateOption === 'today'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-xs font-bold ${
+                    weighInDateOption === 'today' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                >
+                  Today
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setWeighInDateOption('yesterday')}
+                className={`flex-1 py-2 rounded-xl items-center border ${
+                  weighInDateOption === 'yesterday'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-xs font-bold ${
+                    weighInDateOption === 'yesterday' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                >
+                  Yesterday
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setWeighInDateOption('custom')}
+                className={`flex-1 py-2 rounded-xl items-center border ${
+                  weighInDateOption === 'custom'
+                    ? 'bg-cyan-500/20 border-cyan-500'
+                    : 'bg-zinc-900 border-zinc-800'
+                }`}
+              >
+                <Text
+                  className={`text-xs font-bold ${
+                    weighInDateOption === 'custom' ? 'text-cyan-400' : 'text-zinc-400'
+                  }`}
+                >
+                  Custom
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {weighInDateOption === 'custom' && (
+              <View className="mb-3">
+                <Text className="text-[11px] text-zinc-400 mb-1">Enter Date (YYYY-MM-DD):</Text>
+                <TextInput
+                  value={customWeighInDate}
+                  onChangeText={setCustomWeighInDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white px-3 py-2 rounded-xl text-sm font-semibold"
+                />
+              </View>
+            )}
+
             {/* Body Weight Field */}
             <Text className="text-xs text-zinc-300 font-bold mb-1">Body Weight (kg) *</Text>
             <TextInput
@@ -1348,6 +1440,13 @@ export default function AnalyticsScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Backdate Past Workout Modal from Calendar */}
+      <LogPastWorkoutModal
+        visible={showBackdateWorkoutModal}
+        onClose={() => setShowBackdateWorkoutModal(false)}
+        initialDate={selectedDate}
+      />
     </View>
   );
 }

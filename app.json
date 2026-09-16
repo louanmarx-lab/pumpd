@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "scheme": "pumpd",
     "splash": {
       "image": "./assets/splash.png",
@@ -18,17 +17,13 @@
       "userInterfaceStyle": "dark"
     },
     "android": {
-      "package": "com.pumpd.app",
+      "package": "com.multiplier.ripped",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#09090B"
       },
       "userInterfaceStyle": "dark"
-    },
-    "androidNavigationBar": {
-      "visible": "always",
-      "barStyle": "light-content",
-      "backgroundColor": "#18181B"
     },
     "web": {
       "bundler": "metro"

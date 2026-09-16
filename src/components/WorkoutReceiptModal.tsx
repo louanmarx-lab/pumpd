@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useState } from 'react';
 import {
   Modal,
   View,
@@ -12,6 +12,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { WorkoutReceiptData } from '../types/gymjam';
+import { useUserWorkspace } from '../context/UserWorkspaceContext';
+import { shareRoutineCloud } from '../services/shareSplitService';
+import { ShareWorkoutModal } from './workouts/ShareWorkoutModal';
+import { Routine } from '../types';
 
 interface WorkoutReceiptModalProps {
   visible: boolean;
@@ -24,6 +28,11 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
   receiptData,
   onClose,
 }) => {
+  const { activeUser, splits, exercises } = useUserWorkspace();
+  const [showShareRoutineModal, setShowShareRoutineModal] = useState(false);
+  const [routineShareCode, setRoutineShareCode] = useState<string | null>(null);
+  const [isGeneratingRoutineShare, setIsGeneratingRoutineShare] = useState(false);
+
   if (!receiptData) return null;
 
   const formatDuration = (totalSec: number) => {
@@ -56,6 +65,20 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
       shareLines.push(`🤝 Trained with ${receiptData.gymJamBuddy.name} (Jam: ${receiptData.gymJamBuddy.roomPin})`);
     }
 
+    if (receiptData.coachAttribution) {
+      shareLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      shareLines.push(
+        `🛡️ Coached by: ${receiptData.coachAttribution.name}${
+          receiptData.coachAttribution.businessName
+            ? ` (${receiptData.coachAttribution.businessName})`
+            : ''
+        }`
+      );
+      if (receiptData.coachAttribution.instagramHandle) {
+        shareLines.push(`📸 Referral: ${receiptData.coachAttribution.instagramHandle}`);
+      }
+    }
+
     shareLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     shareLines.push(`Logged with Pumpd. No shortcuts.`);
 
@@ -77,6 +100,59 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
       if (err?.message !== 'User did not share') {
         Alert.alert('Receipt Copied', 'Receipt summary copied to clipboard!');
       }
+    }
+  };
+
+  const handleShareRoutineFromReceipt = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setIsGeneratingRoutineShare(true);
+    setRoutineShareCode(null);
+    setShowShareRoutineModal(true);
+
+    let matchedRoutine: Routine | null = null;
+    let parentSplitName = 'Workout Routine';
+
+    for (const s of splits) {
+      const found = s.routines.find(
+        (r) => r.name.toLowerCase() === receiptData.routineName.toLowerCase()
+      );
+      if (found) {
+        matchedRoutine = found;
+        parentSplitName = s.name;
+        break;
+      }
+    }
+
+    if (!matchedRoutine) {
+      const exerciseIds = receiptData.exercisesSummary
+        .map(
+          (es) =>
+            exercises.find(
+              (e) => e.name.toLowerCase() === es.exerciseName.toLowerCase()
+            )?.id
+        )
+        .filter((id): id is string => Boolean(id));
+
+      matchedRoutine = {
+        id: `rt_receipt_${Date.now()}`,
+        name: receiptData.routineName,
+        exerciseIds,
+      };
+    }
+
+    try {
+      const code = await shareRoutineCloud(
+        matchedRoutine,
+        parentSplitName,
+        exercises,
+        activeUser.displayName,
+        activeUser.id
+      );
+      setRoutineShareCode(code);
+      setIsGeneratingRoutineShare(false);
+    } catch (err) {
+      console.warn('Failed to share routine from receipt:', err);
+      setIsGeneratingRoutineShare(false);
     }
   };
 
@@ -129,6 +205,37 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
                 {receiptData.date} • {receiptData.id}
               </Text>
             </View>
+
+            {/* Coaching Attribution Badge */}
+            {receiptData.coachAttribution && (
+              <View className="my-3 bg-zinc-900 border border-cyan-500/40 rounded-2xl p-3 shadow-md">
+                <View className="flex-row items-center space-x-2.5">
+                  <View className="w-8 h-8 rounded-xl bg-accent-cyan items-center justify-center">
+                    <Ionicons name="shield-checkmark" size={16} color="#09090B" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-[8px] font-mono font-bold text-cyan-400 uppercase tracking-widest">
+                      // COACHING ATTRIBUTION //
+                    </Text>
+                    <Text className="text-xs font-black text-white" numberOfLines={1}>
+                      Coached by {receiptData.coachAttribution.name}
+                    </Text>
+                    {receiptData.coachAttribution.businessName ? (
+                      <Text className="text-[10px] text-zinc-400 font-medium" numberOfLines={1}>
+                        {receiptData.coachAttribution.businessName}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {receiptData.coachAttribution.instagramHandle ? (
+                    <View className="bg-zinc-950 px-2 py-1 rounded-lg border border-zinc-800">
+                      <Text className="text-[10px] font-mono font-bold text-cyan-300">
+                        {receiptData.coachAttribution.instagramHandle}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            )}
 
             {/* Gym Jam Buddy Badge if multiplayer session */}
             {receiptData.gymJamBuddy && (
@@ -261,24 +368,46 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
           </View>
 
           {/* Action Buttons */}
-          <View className="w-full flex-row space-x-3 mt-4">
-            <TouchableOpacity
-              onPress={onClose}
-              className="flex-1 bg-zinc-900 border border-zinc-750 py-3.5 rounded-2xl items-center"
-            >
-              <Text className="text-sm font-bold text-zinc-300">Done</Text>
-            </TouchableOpacity>
+          <View className="w-full mt-4 space-y-2">
+            <View className="flex-row space-x-3">
+              <TouchableOpacity
+                onPress={onClose}
+                className="flex-1 bg-zinc-900 border border-zinc-750 py-3.5 rounded-2xl items-center"
+              >
+                <Text className="text-sm font-bold text-zinc-300">Done</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleShare}
+                className="flex-1 bg-accent-cyan py-3.5 rounded-2xl flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/30"
+              >
+                <Ionicons name="share-outline" size={18} color="#09090B" />
+                <Text className="text-sm font-black text-black">Share Story</Text>
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity
-              onPress={handleShare}
-              className="flex-1 bg-accent-cyan py-3.5 rounded-2xl flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/30"
+              onPress={handleShareRoutineFromReceipt}
+              className="w-full bg-zinc-900/80 border border-cyan-500/40 py-3 rounded-xl flex-row items-center justify-center space-x-2"
             >
-              <Ionicons name="share-outline" size={18} color="#09090B" />
-              <Text className="text-sm font-black text-black">Share Story</Text>
+              <Ionicons name="share-social-outline" size={15} color="#06B6D4" />
+              <Text className="text-xs font-bold text-cyan-400">Share Routine Code with Friend</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
       </View>
+
+      {/* Routine Share Modal from Receipt */}
+      <ShareWorkoutModal
+        visible={showShareRoutineModal}
+        onClose={() => setShowShareRoutineModal(false)}
+        shareCode={routineShareCode}
+        title={receiptData.routineName}
+        type="routine"
+        routinesCount={1}
+        exercisesCount={receiptData.exercisesSummary.length}
+        isGenerating={isGeneratingRoutineShare}
+      />
     </Modal>
   );
 };
