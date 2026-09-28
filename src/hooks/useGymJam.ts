@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import {
@@ -17,6 +18,11 @@ import {
   JamLiveToast,
   PrescribedMealArchetype,
   UserRole,
+  UpdateLifterSetMessage,
+  AddLifterSetMessage,
+  RemoveLifterSetMessage,
+  SyncBenchmarksMessage,
+  SessionExerciseTemplate,
 } from '../types/gymjam';
 import {
   JamRoomData,
@@ -25,9 +31,11 @@ import {
   subscribeToJamRoomCloud,
   broadcastJamEventCloud,
   leaveJamRoomCloud,
+  syncJamRoomExercisesCloud,
+  peekJamRoomCloud,
 } from '../services/gymJamService';
 
-const JAM_STORAGE_KEY = '@pumpd_active_jam_session';
+const JAM_STORAGE_KEY = '@ripped_active_jam_session';
 
 export interface UseGymJamProps {
   currentUserId: string;
@@ -43,6 +51,12 @@ export interface UseGymJamProps {
   onPresetsSync?: (msg: SyncPresetsMessage) => void;
   onAdvanceExercise?: (msg: AdvanceExerciseMessage) => void;
   onTurnSet?: (msg: TurnSetMessage) => void;
+  onLifterSetUpdated?: (msg: UpdateLifterSetMessage) => void;
+  onLifterSetAdded?: (msg: AddLifterSetMessage) => void;
+  onLifterSetRemoved?: (msg: RemoveLifterSetMessage) => void;
+  onBenchmarksSynced?: (msg: SyncBenchmarksMessage) => void;
+  onSessionExercisesSynced?: (sessionExercises: Record<string, any[]>) => void;
+  onWorkoutFinished?: (msg: { finishedByUserId: string; finishedByUserName: string; timestamp: number }) => void;
 }
 
 export function useGymJam({
@@ -59,16 +73,24 @@ export function useGymJam({
   onPresetsSync,
   onAdvanceExercise,
   onTurnSet,
+  onLifterSetUpdated,
+  onLifterSetAdded,
+  onLifterSetRemoved,
+  onBenchmarksSynced,
+  onSessionExercisesSynced,
+  onWorkoutFinished,
 }: UseGymJamProps) {
   const [connectionStatus, setConnectionStatus] = useState<JamConnectionStatus>('disconnected');
   const [roomPin, setRoomPin] = useState<string | null>(null);
   const [role, setRole] = useState<JamRole | null>(null);
+  const roleRef = useRef<JamRole | null>(null);
   const [partnerName, setPartnerName] = useState<string | null>(null);
   const [partnerUserId, setPartnerUserId] = useState<string | null>(null);
   const [liveToasts, setLiveToasts] = useState<JamLiveToast[]>([]);
 
   const unsubscribeRoomRef = useRef<(() => void) | null>(null);
   const lastProcessedEventIdRef = useRef<string | null>(null);
+  const clientSessionIdRef = useRef<string>(`client_${Date.now()}_${Math.floor(Math.random() * 100000)}`);
 
   // Keep references to latest callbacks to avoid stale closures
   const callbacksRef = useRef({
@@ -82,6 +104,12 @@ export function useGymJam({
     onPresetsSync,
     onAdvanceExercise,
     onTurnSet,
+    onLifterSetUpdated,
+    onLifterSetAdded,
+    onLifterSetRemoved,
+    onBenchmarksSynced,
+    onSessionExercisesSynced,
+    onWorkoutFinished,
   });
 
   useEffect(() => {
@@ -96,6 +124,12 @@ export function useGymJam({
       onPresetsSync,
       onAdvanceExercise,
       onTurnSet,
+      onLifterSetUpdated,
+      onLifterSetAdded,
+      onLifterSetRemoved,
+      onBenchmarksSynced,
+      onSessionExercisesSynced,
+      onWorkoutFinished,
     };
   }, [
     onSyncSessionReceived,
@@ -108,6 +142,12 @@ export function useGymJam({
     onPresetsSync,
     onAdvanceExercise,
     onTurnSet,
+    onLifterSetUpdated,
+    onLifterSetAdded,
+    onLifterSetRemoved,
+    onBenchmarksSynced,
+    onSessionExercisesSynced,
+    onWorkoutFinished,
   ]);
 
   // Helper to display real-time live toast notification
@@ -128,33 +168,56 @@ export function useGymJam({
   // Handle incoming real-time room updates from Firestore
   const handleRoomSnapshot = useCallback(
     (room: JamRoomData) => {
+      // 0. Synchronize full live session state (critical for recovery when phone was locked/asleep)
+      if (room.sessionExercises) {
+        callbacksRef.current.onSessionExercisesSynced?.(room.sessionExercises);
+      }
+
       // 1. Connection status transition
       if (room.status === 'connected') {
         setConnectionStatus('connected');
 
-        // Identify partner
-        if (role === 'host') {
-          if (room.guestName && room.guestName !== partnerName) {
-            setPartnerName(room.guestName);
-            setPartnerUserId(room.guestUserId || 'guest');
-            addToast(`Partner ${room.guestName} joined the Jam!`, room.guestName);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        // Identify partner safely without stale closure issues
+        const isHost = roleRef.current === 'host' || currentUserId === room.hostUserId;
+
+        if (isHost) {
+          // Current device is host -> Partner is guest
+          if (room.guestUserId && room.guestUserId !== currentUserId) {
+            const newGuestName = room.guestName || 'Gym Partner';
+            setPartnerUserId(room.guestUserId);
+            setPartnerName((prev) => {
+              if (prev !== newGuestName) {
+                addToast(`Partner ${newGuestName} joined the Jam!`, newGuestName);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              }
+              return newGuestName;
+            });
           }
         } else {
-          if (room.hostName && room.hostName !== partnerName) {
-            setPartnerName(room.hostName);
+          // Current device is guest -> Partner is host
+          if (room.hostUserId && room.hostUserId !== currentUserId) {
+            const newHostName = room.hostName || 'Gym Host';
             setPartnerUserId(room.hostUserId);
+            setPartnerName(newHostName);
           }
         }
       } else if (room.status === 'waiting') {
-        if (role === 'host') {
+        const isHost = roleRef.current === 'host' || currentUserId === room.hostUserId;
+        if (isHost) {
           setConnectionStatus('connecting');
           setPartnerName(null);
           setPartnerUserId(null);
         }
       } else if (room.status === 'ended') {
         setConnectionStatus('disconnected');
-        addToast('Gym Jam session was ended by the host', 'Gym Jam');
+        setPartnerName(null);
+        setPartnerUserId(null);
+        addToast('RIPPED BUDDY session was ended by the host', 'RIPPED BUDDY');
+        callbacksRef.current.onWorkoutFinished?.({
+          finishedByUserId: room.hostUserId,
+          finishedByUserName: room.hostName,
+          timestamp: room.updatedAt || Date.now(),
+        });
       }
 
       // 2. Process real-time events (sets, turns, timer, exercise advances)
@@ -163,7 +226,11 @@ export function useGymJam({
       lastProcessedEventIdRef.current = event.id;
 
       // Ignore self-dispatched events
-      if (event.senderId === currentUserId) return;
+      if (event.senderClientId) {
+        if (event.senderClientId === clientSessionIdRef.current) return;
+      } else if (event.senderId === currentUserId) {
+        return;
+      }
 
       switch (event.type) {
         case 'LOG_SET': {
@@ -210,9 +277,9 @@ export function useGymJam({
         case 'TURN_SET': {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           if (event.payload.activeTurnUserId === currentUserId) {
-            addToast(`🎯 It's YOUR turn to lift!`, 'Gym Jam');
+            addToast(`🎯 It's YOUR turn to lift!`, 'RIPPED BUDDY');
           } else {
-            addToast(`⏳ ${event.payload.activeTurnUserName}'s turn to lift`, 'Gym Jam');
+            addToast(`⏳ ${event.payload.activeTurnUserName}'s turn to lift`, 'RIPPED BUDDY');
           }
           callbacksRef.current.onTurnSet?.({
             type: 'TURN_SET',
@@ -277,6 +344,39 @@ export function useGymJam({
           break;
         }
 
+        case 'UPDATE_LIFTER_SET': {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          callbacksRef.current.onLifterSetUpdated?.(event.payload);
+          break;
+        }
+
+        case 'ADD_LIFTER_SET': {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          callbacksRef.current.onLifterSetAdded?.(event.payload);
+          break;
+        }
+
+        case 'REMOVE_LIFTER_SET': {
+          callbacksRef.current.onLifterSetRemoved?.(event.payload);
+          break;
+        }
+
+        case 'SYNC_BENCHMARKS': {
+          callbacksRef.current.onBenchmarksSynced?.(event.payload);
+          break;
+        }
+
+        case 'FINISH_WORKOUT': {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          addToast(`Partner finished the workout!`, event.senderName);
+          callbacksRef.current.onWorkoutFinished?.({
+            finishedByUserId: event.senderId,
+            finishedByUserName: event.senderName,
+            timestamp: event.timestamp,
+          });
+          break;
+        }
+
         default:
           break;
       }
@@ -284,18 +384,61 @@ export function useGymJam({
     [currentUserId, role, partnerName, addToast]
   );
 
+  // Keep roomPin in a ref for background / AppState recovery
+  const roomPinRef = useRef<string | null>(null);
+  useEffect(() => {
+    roomPinRef.current = roomPin;
+  }, [roomPin]);
+
+  // AppState Recovery: When user locks phone or switches apps and reopens,
+  // immediately pull fresh room data from Firestore to guarantee 100% sync!
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && roomPinRef.current) {
+        try {
+          const result = await peekJamRoomCloud(roomPinRef.current);
+          if (result.success && result.data) {
+            handleRoomSnapshot(result.data);
+          }
+        } catch (err) {
+          console.warn('[GymJam] Error re-syncing room on app resume:', err);
+        }
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      sub.remove();
+    };
+  }, [handleRoomSnapshot]);
+
+  // Synchronize full live session exercises to Firestore
+  const syncSessionExercises = useCallback(
+    (exercisesMap: Record<string, any[]>) => {
+      const activePin = roomPinRef.current || roomPin;
+      if (!activePin) return;
+      syncJamRoomExercisesCloud(activePin, exercisesMap);
+    },
+    [roomPin]
+  );
+
   // Host a new session: generates clean PIN PUMP-XX and creates Firestore room
   const hostRoom = useCallback(
-    async (initialSyncData: { routineName: string; exerciseIds: string[] }) => {
+    async (initialSyncData: {
+      routineName: string;
+      exerciseIds: string[];
+      sessionExercisesTemplate?: SessionExerciseTemplate[];
+    }) => {
       try {
         disconnect();
 
-        // 2-digit clean code e.g. PUMP-42
+        // 2-digit clean code e.g. RIP-42
         const pinNumber = Math.floor(10 + Math.random() * 90);
-        const pin = `PUMP-${pinNumber}`;
+        const pin = `RIP-${pinNumber}`;
 
         setRoomPin(pin);
         setRole('host');
+        roleRef.current = 'host';
         setConnectionStatus('connecting');
 
         await createJamRoomCloud(
@@ -340,11 +483,16 @@ export function useGymJam({
         disconnect();
 
         const clean = rawPin.trim().toUpperCase();
-        // Support either raw number "42" or "PUMP-42"
-        const normalizedPin = clean.startsWith('PUMP-') ? clean : `PUMP-${clean.replace(/\D/g, '')}`;
+        // Support either raw number "42", "RIP-42", or legacy "PUMP-42"
+        const normalizedPin = clean.startsWith('RIP-')
+          ? clean
+          : clean.startsWith('PUMP-')
+          ? clean
+          : `RIP-${clean.replace(/\D/g, '')}`;
 
         setRoomPin(normalizedPin);
         setRole('guest');
+        roleRef.current = 'guest';
         setConnectionStatus('connecting');
 
         const result = await joinJamRoomCloud(normalizedPin, {
@@ -357,11 +505,13 @@ export function useGymJam({
           return false;
         }
 
+        const effectivePin = result.resolvedPin || normalizedPin;
+        setRoomPin(effectivePin);
         const room = result.data;
         setPartnerName(room.hostName);
         setPartnerUserId(room.hostUserId);
         setConnectionStatus('connected');
-        addToast(`Joined Gym Jam room with ${room.hostName}!`, room.hostName);
+        addToast(`Joined RIPPED BUDDY room with ${room.hostName}!`, room.hostName);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
         // Synchronize initial routine queue with host
@@ -372,11 +522,12 @@ export function useGymJam({
           hostRole: room.hostRole,
           routineName: room.routineName,
           exerciseIds: room.exerciseIds,
+          sessionExercises: room.sessionExercisesTemplate,
           timestamp: room.createdAt,
         });
 
         // Subscribe to real-time room updates
-        const unsub = subscribeToJamRoomCloud(normalizedPin, handleRoomSnapshot, (err) => {
+        const unsub = subscribeToJamRoomCloud(effectivePin, handleRoomSnapshot, (err) => {
           console.warn('[GymJam] Error listening to guest room:', err);
         });
         unsubscribeRoomRef.current = unsub;
@@ -384,7 +535,7 @@ export function useGymJam({
         await AsyncStorage.setItem(
           JAM_STORAGE_KEY,
           JSON.stringify({
-            roomPin: normalizedPin,
+            roomPin: effectivePin,
             role: 'guest',
             timestamp: Date.now(),
           })
@@ -409,6 +560,7 @@ export function useGymJam({
         payload: { exerciseId, setIndex, weight, reps, rpe },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -430,6 +582,7 @@ export function useGymJam({
         payload: { athleteId, exerciseId, setIndex, weight, reps, rpe },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -444,6 +597,7 @@ export function useGymJam({
         payload: { exerciseId, exerciseName },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -458,6 +612,7 @@ export function useGymJam({
         payload: { exerciseIndex, oldExerciseId, newExerciseId, newExerciseName },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -472,6 +627,7 @@ export function useGymJam({
         payload: { durationSeconds },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -508,6 +664,7 @@ export function useGymJam({
         payload: { exerciseIndex, exerciseId, exerciseName },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -527,6 +684,7 @@ export function useGymJam({
         payload: { activeTurnUserId, activeTurnUserName, lastCompletedSet, restTimerSeconds },
         senderId: currentUserId,
         senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
       });
     },
     [roomPin, currentUserId, currentUserName]
@@ -541,13 +699,15 @@ export function useGymJam({
       unsubscribeRoomRef.current = null;
     }
 
+    const isHost = roleRef.current === 'host' || role === 'host';
     if (roomPin) {
-      leaveJamRoomCloud(roomPin, currentUserId, role === 'host');
+      leaveJamRoomCloud(roomPin, currentUserId, isHost);
     }
 
     setConnectionStatus('disconnected');
     setRoomPin(null);
     setRole(null);
+    roleRef.current = null;
     setPartnerName(null);
     setPartnerUserId(null);
     AsyncStorage.removeItem(JAM_STORAGE_KEY).catch(() => {});
@@ -568,8 +728,108 @@ export function useGymJam({
     setConnectionStatus('connected');
     setPartnerName(name);
     setPartnerUserId('simulated_partner_user');
-    addToast(`${name} joined your Gym Jam`, name);
+    addToast(`${name} joined your GymBuddy`, name);
   }, [addToast]);
+
+  const broadcastUpdateLifterSet = useCallback(
+    (targetUserId: string, exerciseIndex: number, setIndex: number, field: string, value: any) => {
+      if (!roomPin) return;
+      broadcastJamEventCloud(roomPin, {
+        type: 'UPDATE_LIFTER_SET',
+        payload: {
+          targetUserId,
+          exerciseIndex,
+          setIndex,
+          field,
+          value,
+          updatedByUserId: currentUserId,
+          updatedByUserName: currentUserName,
+          timestamp: Date.now(),
+        },
+        senderId: currentUserId,
+        senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
+      });
+    },
+    [roomPin, currentUserId, currentUserName]
+  );
+
+  const broadcastAddLifterSet = useCallback(
+    (targetUserId: string, exerciseIndex: number, newSet: any) => {
+      if (!roomPin) return;
+      broadcastJamEventCloud(roomPin, {
+        type: 'ADD_LIFTER_SET',
+        payload: {
+          targetUserId,
+          exerciseIndex,
+          newSet,
+          addedByUserId: currentUserId,
+          timestamp: Date.now(),
+        },
+        senderId: currentUserId,
+        senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
+      });
+    },
+    [roomPin, currentUserId, currentUserName]
+  );
+
+  const broadcastRemoveLifterSet = useCallback(
+    (targetUserId: string, exerciseIndex: number, setIndex: number) => {
+      if (!roomPin) return;
+      broadcastJamEventCloud(roomPin, {
+        type: 'REMOVE_LIFTER_SET',
+        payload: {
+          targetUserId,
+          exerciseIndex,
+          setIndex,
+          removedByUserId: currentUserId,
+          timestamp: Date.now(),
+        },
+        senderId: currentUserId,
+        senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
+      });
+    },
+    [roomPin, currentUserId, currentUserName]
+  );
+
+  const broadcastSyncBenchmarks = useCallback(
+    (benchmarks: Record<string, any>) => {
+      if (!roomPin) return;
+      broadcastJamEventCloud(roomPin, {
+        type: 'SYNC_BENCHMARKS',
+        payload: {
+          userId: currentUserId,
+          userName: currentUserName,
+          benchmarks,
+          timestamp: Date.now(),
+        },
+        senderId: currentUserId,
+        senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
+      });
+    },
+    [roomPin, currentUserId, currentUserName]
+  );
+
+  const broadcastFinishWorkout = useCallback(
+    (finishedByUserId: string, finishedByUserName: string) => {
+      if (!roomPin) return;
+      broadcastJamEventCloud(roomPin, {
+        type: 'FINISH_WORKOUT',
+        payload: {
+          finishedByUserId,
+          finishedByUserName,
+          timestamp: Date.now(),
+        },
+        senderId: currentUserId,
+        senderName: currentUserName,
+        senderClientId: clientSessionIdRef.current,
+      });
+    },
+    [roomPin, currentUserId, currentUserName]
+  );
 
   return {
     connectionStatus,
@@ -590,6 +850,12 @@ export function useGymJam({
     broadcastSyncPresets,
     broadcastAdvanceExercise,
     broadcastTurnSet,
+    broadcastUpdateLifterSet,
+    broadcastAddLifterSet,
+    broadcastRemoveLifterSet,
+    broadcastSyncBenchmarks,
+    broadcastFinishWorkout,
+    syncSessionExercises,
     disconnect,
   };
 }

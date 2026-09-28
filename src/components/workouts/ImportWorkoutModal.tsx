@@ -16,6 +16,7 @@ import * as Haptics from 'expo-haptics';
 import { fetchSharedSplitCloud, SharedSplitPayload } from '../../services/shareSplitService';
 import { useUserWorkspace } from '../../context/UserWorkspaceContext';
 import { Split, Exercise } from '../../types';
+import { QRCodeScannerModal } from '../QRCodeScannerModal';
 
 interface ImportWorkoutModalProps {
   visible: boolean;
@@ -31,12 +32,14 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
   const { activeUser, activeWorkspace, exercises, addExercise, addSplit, updateSplit } = useUserWorkspace();
 
   const [codeInput, setCodeInput] = useState('');
+  const [showScannerModal, setShowScannerModal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [previewPayload, setPreviewPayload] = useState<SharedSplitPayload | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const resetState = () => {
     setCodeInput('');
+    setShowScannerModal(false);
     setIsLoading(false);
     setPreviewPayload(null);
     setErrorMessage(null);
@@ -47,9 +50,10 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
     onClose();
   };
 
-  const handleFetchWorkout = async () => {
-    if (!codeInput.trim()) {
-      setErrorMessage('Please enter a share code.');
+  const handleFetchWorkout = async (overrideCode?: string) => {
+    const codeToSearch = (overrideCode || codeInput).trim();
+    if (!codeToSearch) {
+      setErrorMessage('Please enter or scan a share code.');
       return;
     }
 
@@ -59,12 +63,12 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
     setPreviewPayload(null);
 
     try {
-      const result = await fetchSharedSplitCloud(codeInput);
+      const result = await fetchSharedSplitCloud(codeToSearch);
       if (result) {
         setPreviewPayload(result);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       } else {
-        setErrorMessage('Workout not found. Please check the code and try again.');
+        setErrorMessage(`Workout "${codeToSearch}" not found. Please verify the code or QR.`);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       }
     } catch (err) {
@@ -73,6 +77,12 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleQRScanned = (scannedCode: string) => {
+    setCodeInput(scannedCode.toUpperCase());
+    setShowScannerModal(false);
+    handleFetchWorkout(scannedCode.toUpperCase());
   };
 
   // Identify missing exercises that need to be added to user's library
@@ -123,15 +133,13 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
     }
 
     // 2. Construct the new Split
-    const newSplitId = `split_imported_${Date.now()}`;
     const newRoutines = previewPayload.routines.map((r, rIdx) => ({
       id: `rt_imported_${Date.now()}_${rIdx}`,
       name: r.name,
       exerciseIds: (r.exerciseIds || []).map((id) => exerciseIdMap[id] || id),
     }));
 
-    const importedSplit: Split = {
-      id: newSplitId,
+    const importedSplitData: Omit<Split, 'id'> = {
       userId: activeUser.id,
       name: `${previewPayload.splitName} (Imported)`,
       description:
@@ -141,28 +149,29 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
       isActive: false,
     };
 
-    // Save to user workspace
-    addSplit(importedSplit);
+    // Save to user workspace - captures actual persistent split object & ID
+    const savedSplit = addSplit(importedSplitData);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     // 3. Prompt to set as active split
     Alert.alert(
       'Workout Imported! 🏋️',
-      `"${importedSplit.name}" with ${newRoutines.length} routine(s) has been added to your workouts. Would you like to set it as your active split?`,
+      `"${savedSplit.name}" with ${newRoutines.length} routine(s) has been added to your workouts. Would you like to set it as your active split?`,
       [
         {
           text: 'Keep Current Split',
           style: 'cancel',
           onPress: () => {
-            onImportSuccess?.(importedSplit);
+            onImportSuccess?.(savedSplit);
             handleClose();
           },
         },
         {
           text: 'Set as Active',
           onPress: () => {
-            updateSplit({ ...importedSplit, isActive: true });
-            onImportSuccess?.(importedSplit);
+            const activeSplitObj = { ...savedSplit, isActive: true };
+            updateSplit(activeSplitObj);
+            onImportSuccess?.(activeSplitObj);
             handleClose();
           },
         },
@@ -201,26 +210,76 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
+            {/* Quick QR Scanner Hero Action */}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setShowScannerModal(true);
+              }}
+              className="bg-cyan-950/40 border-2 border-cyan-500/60 py-3.5 px-4 rounded-2xl flex-row items-center justify-between mb-4 shadow-lg shadow-cyan-500/10"
+            >
+              <View className="flex-row items-center space-x-3">
+                <View className="w-10 h-10 rounded-xl bg-accent-cyan items-center justify-center shadow-md">
+                  <Ionicons name="qr-code-outline" size={20} color="#09090B" />
+                </View>
+                <View>
+                  <Text className="text-white font-black text-sm">
+                    Scan Friend's QR Code
+                  </Text>
+                  <Text className="text-[11px] text-cyan-400 font-semibold">
+                    Aim camera to import workout instantly
+                  </Text>
+                </View>
+              </View>
+
+              <View className="bg-cyan-500/20 px-2.5 py-1 rounded-lg border border-cyan-400/30">
+                <Ionicons name="camera" size={14} color="#06B6D4" />
+              </View>
+            </TouchableOpacity>
+
+            {/* Divider */}
+            <View className="flex-row items-center mb-3.5">
+              <View className="flex-1 h-[1px] bg-zinc-800" />
+              <Text className="text-[10px] text-zinc-500 font-bold px-3 uppercase tracking-wider">
+                Or Enter Code Manually
+              </Text>
+              <View className="flex-1 h-[1px] bg-zinc-800" />
+            </View>
+
             {/* Code Input Field */}
             <View className="mb-3">
               <Text className="text-[11px] font-bold text-zinc-400 mb-1.5 uppercase tracking-wider">
                 Workout Share Code
               </Text>
               <View className="flex-row space-x-2">
-                <TextInput
-                  value={codeInput}
-                  onChangeText={(val) => {
-                    setCodeInput(val.toUpperCase());
-                    setErrorMessage(null);
-                  }}
-                  placeholder="e.g. SPLIT-8492 or 8492"
-                  placeholderTextColor="#71717A"
-                  autoCapitalize="characters"
-                  className="flex-1 bg-zinc-900 border border-zinc-700 text-white px-4 py-3 rounded-xl font-mono text-base font-bold tracking-widest text-center"
-                />
+                <View className="flex-1 relative justify-center">
+                  <TextInput
+                    value={codeInput}
+                    onChangeText={(val) => {
+                      setCodeInput(val.toUpperCase());
+                      setErrorMessage(null);
+                    }}
+                    placeholder="e.g. SPLIT-HX46"
+                    placeholderTextColor="#71717A"
+                    autoCapitalize="characters"
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white pl-4 pr-11 py-3 rounded-xl font-mono text-base font-bold tracking-widest text-center"
+                  />
+                  <TouchableOpacity
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setShowScannerModal(true);
+                    }}
+                    className="absolute right-2.5 p-1.5 rounded-lg bg-zinc-800"
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="camera" size={16} color="#06B6D4" />
+                  </TouchableOpacity>
+                </View>
+
                 <TouchableOpacity
                   disabled={isLoading || !codeInput.trim()}
-                  onPress={handleFetchWorkout}
+                  onPress={() => handleFetchWorkout()}
                   className={`px-5 rounded-xl items-center justify-center ${
                     !codeInput.trim() || isLoading ? 'bg-zinc-800' : 'bg-accent-cyan'
                   }`}
@@ -328,6 +387,15 @@ export const ImportWorkoutModal: React.FC<ImportWorkoutModalProps> = ({
           </ScrollView>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Camera QR Scanner Modal */}
+      <QRCodeScannerModal
+        visible={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        onScanned={handleQRScanned}
+        title="Scan Workout QR"
+        subtitle="Point camera at friend's RIPPED QR code"
+      />
     </Modal>
   );
 };

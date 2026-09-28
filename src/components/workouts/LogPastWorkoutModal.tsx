@@ -14,12 +14,15 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
 import { useUserWorkspace } from '../../context/UserWorkspaceContext';
-import { LoggedExercise, SetLog, SetType, Exercise } from '../../types';
+import { LoggedExercise, SetLog, SetType, Exercise, WorkoutLog } from '../../types';
 
 interface LogPastWorkoutModalProps {
   visible: boolean;
   onClose: () => void;
   initialDate?: string;
+  clientId?: string;
+  clientName?: string;
+  onSaveOverride?: (log: Omit<WorkoutLog, 'id'>) => WorkoutLog;
 }
 
 const getPastDateStr = (daysAgo: number): string => {
@@ -31,6 +34,9 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
   visible,
   onClose,
   initialDate,
+  clientId,
+  clientName,
+  onSaveOverride,
 }) => {
   const {
     activeUser,
@@ -213,8 +219,9 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
       };
     });
 
-    const newLog = saveWorkoutLog({
-      userId: activeUser.id,
+    const targetUserId = clientId || activeUser.id;
+    const logPayload = {
+      userId: targetUserId,
       workspaceId: activeWorkspace.id,
       splitId: activeSplit?.id || 'split_custom',
       routineName: routineTitle.trim(),
@@ -222,12 +229,20 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
       timestamp: new Date(effectiveDate).getTime() || Date.now(),
       durationSeconds: durationMinsNum * 60,
       exercises: compiledExercises,
-    });
+    };
+
+    if (onSaveOverride) {
+      onSaveOverride(logPayload);
+    } else {
+      saveWorkoutLog(logPayload);
+    }
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert(
       'Workout Saved! 🏋️',
-      `Saved "${routineTitle}" for ${effectiveDate} (${compiledExercises.length} exercises). Automatically synced to local storage & cloud backup.`
+      clientName
+        ? `Saved "${routineTitle}" for ${clientName} on ${effectiveDate} (${compiledExercises.length} exercises).`
+        : `Saved "${routineTitle}" for ${effectiveDate} (${compiledExercises.length} exercises). Automatically synced to local storage & cloud backup.`
     );
     onClose();
   };
@@ -255,9 +270,11 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
                 <Ionicons name="calendar-outline" size={18} color="#06B6D4" />
               </View>
               <View>
-                <Text className="text-base font-bold text-white">Log Past Workout</Text>
+                <Text className="text-base font-bold text-white">
+                  {clientName ? `Log Session for ${clientName}` : 'Log Past Workout'}
+                </Text>
                 <Text className="text-[11px] text-zinc-400">
-                  Backdate sessions directly into your history
+                  {clientName ? 'Record an in-person or coach-led workout' : 'Backdate sessions directly into your history'}
                 </Text>
               </View>
             </View>
@@ -440,7 +457,6 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
                   <Text className="text-[10px] text-zinc-500 font-bold w-10">SET</Text>
                   <Text className="text-[10px] text-zinc-500 font-bold flex-1 text-center">KG</Text>
                   <Text className="text-[10px] text-zinc-500 font-bold flex-1 text-center">REPS</Text>
-                  <Text className="text-[10px] text-zinc-500 font-bold w-14 text-center">RPE</Text>
                   <View className="w-6" />
                 </View>
 
@@ -465,14 +481,6 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
                       placeholder="reps"
                       placeholderTextColor="#52525B"
                       className="flex-1 bg-zinc-950 border border-zinc-800 text-white text-xs font-bold py-1 px-2 rounded-lg text-center"
-                    />
-                    <TextInput
-                      keyboardType="numeric"
-                      value={set.rpe}
-                      onChangeText={(val) => handleUpdateSet(exIdx, sIdx, 'rpe', val)}
-                      placeholder="8"
-                      placeholderTextColor="#52525B"
-                      className="w-14 bg-zinc-950 border border-zinc-800 text-white text-xs font-bold py-1 px-2 rounded-lg text-center font-mono"
                     />
                     <TouchableOpacity
                       onPress={() => handleRemoveSet(exIdx, sIdx)}

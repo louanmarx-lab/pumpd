@@ -17,11 +17,13 @@ import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 
 import { useUserWorkspace } from '../../context/UserWorkspaceContext';
+import { WeightUnit } from '../../types';
 import {
   signInWithEmail,
   registerWithEmail,
   signOutUser,
   signInAsGuest,
+  sendPasswordReset,
 } from '../../services/authService';
 
 interface AuthModalProps {
@@ -35,11 +37,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
     firebaseUser,
     activeUser,
     cloudSyncStatus,
+    updateWeightUnit,
     syncAllToCloud,
     signOut,
   } = useUserWorkspace();
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [preferredUnit, setPreferredUnit] = useState<WeightUnit>(activeUser.weightUnit || 'kg');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -47,6 +51,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
   const [errorMessage, setErrorMessage] = useState('');
 
   const isGuest = !firebaseUser || firebaseUser.isAnonymous;
+
+  const handleForgotPassword = async () => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      Alert.alert('Email Required', 'Please enter your email address in the field below to reset your password.');
+      return;
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await sendPasswordReset(cleanEmail);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        'Password Reset Link Sent ✉️',
+        `An official password reset link was sent to ${cleanEmail}. Please check your inbox and spam folder.`
+      );
+    } catch (err: any) {
+      Alert.alert('Notice', err?.message || 'Could not send reset link. Please check your email.');
+    }
+  };
 
   const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) {
@@ -69,6 +92,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
           password,
           displayName.trim() || activeUser.displayName
         );
+        updateWeightUnit(preferredUnit);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert(
           'Account Created! 🚀',
@@ -126,12 +150,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
         className="flex-1 bg-black/80 justify-end"
       >
-        <View className="bg-dark-card border-t border-dark-border rounded-t-3xl p-6 max-h-[85%]">
+        <View className="bg-dark-card border-t border-dark-border rounded-t-3xl p-6 max-h-[90%]">
           {/* Header */}
           <View className="flex-row items-center justify-between pb-4 border-b border-zinc-800">
             <View className="flex-row items-center space-x-2">
@@ -156,7 +181,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
             </TouchableOpacity>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false} className="py-4">
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: 100 }}
+            className="py-4"
+          >
             {/* Status Pill */}
             <View className="bg-zinc-900 border border-zinc-800 p-3.5 rounded-2xl mb-5">
               <View className="flex-row items-center justify-between mb-1.5">
@@ -273,18 +303,63 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
 
                 {/* Name field for Sign Up */}
                 {mode === 'signup' && (
-                  <View className="mb-3">
-                    <Text className="text-xs text-zinc-400 font-medium mb-1">
-                      Display Name
-                    </Text>
-                    <TextInput
-                      value={displayName}
-                      onChangeText={setDisplayName}
-                      placeholder={activeUser.displayName || 'Your Name'}
-                      placeholderTextColor="#71717A"
-                      className="bg-zinc-900 border border-zinc-800 text-white px-3.5 py-2.5 rounded-xl text-sm"
-                    />
-                  </View>
+                  <>
+                    <View className="mb-3">
+                      <Text className="text-xs text-zinc-400 font-medium mb-1">
+                        Display Name
+                      </Text>
+                      <TextInput
+                        value={displayName}
+                        onChangeText={setDisplayName}
+                        placeholder={activeUser.displayName || 'Your Name'}
+                        placeholderTextColor="#71717A"
+                        className="bg-zinc-900 border border-zinc-800 text-white px-3.5 py-2.5 rounded-xl text-sm"
+                      />
+                    </View>
+
+                    {/* Weight Unit Preference */}
+                    <View className="mb-3">
+                      <Text className="text-xs text-zinc-400 font-medium mb-1">
+                        Preferred Weight Unit
+                      </Text>
+                      <View className="flex-row bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
+                        <TouchableOpacity
+                          onPress={() => {
+                            Haptics.selectionAsync();
+                            setPreferredUnit('kg');
+                          }}
+                          className={`flex-1 py-1.5 items-center rounded-lg ${
+                            preferredUnit === 'kg' ? 'bg-accent-cyan' : ''
+                          }`}
+                        >
+                          <Text
+                            className={`text-xs font-bold ${
+                              preferredUnit === 'kg' ? 'text-black' : 'text-zinc-400'
+                            }`}
+                          >
+                            Kilograms (kg)
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => {
+                            Haptics.selectionAsync();
+                            setPreferredUnit('lbs');
+                          }}
+                          className={`flex-1 py-1.5 items-center rounded-lg ${
+                            preferredUnit === 'lbs' ? 'bg-accent-cyan' : ''
+                          }`}
+                        >
+                          <Text
+                            className={`text-xs font-bold ${
+                              preferredUnit === 'lbs' ? 'text-black' : 'text-zinc-400'
+                            }`}
+                          >
+                            Pounds (lbs)
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </>
                 )}
 
                 {/* Email Field */}
@@ -317,6 +392,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
                     className="bg-zinc-900 border border-zinc-800 text-white px-3.5 py-2.5 rounded-xl text-sm"
                   />
                 </View>
+
+                {/* Forgot Password Link */}
+                {mode === 'signin' && (
+                  <View className="flex-row justify-end mb-3 -mt-2">
+                    <TouchableOpacity onPress={handleForgotPassword} className="py-1">
+                      <Text className="text-xs font-bold text-accent-cyan">Forgot Password?</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
 
                 {/* Error Banner */}
                 {!!errorMessage && (

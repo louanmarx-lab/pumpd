@@ -20,8 +20,8 @@ import { PrescribedMealArchetype } from '../types/trainer';
 
 export { DEFAULT_ARCHETYPES };
 
-const STORAGE_KEY_PREFIX = '@pumpd_meal_archetypes_v3';
-const LEGACY_STORAGE_KEY = '@pumpd_custom_meal_archetypes';
+const STORAGE_KEY_PREFIX = '@ripped_meal_archetypes_v3';
+const LEGACY_STORAGE_KEY = '@ripped_custom_meal_archetypes';
 
 const POPULAR_EMOJIS = ['🥗', '🍗', '🥤', '🥩', '🍳', '🍫', '🥑', '🍚', '🥪', '🥣', '🍎', '🥞', '🍣', '🍱'];
 
@@ -32,11 +32,20 @@ interface MealArchetypesQuickAddProps {
     protein: number;
     carbs: number;
     fats: number;
+    recipe?: string;
   }) => void;
 }
 
 export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ onLogMeal }) => {
-  const { activeUser, prescribedArchetypes, setPrescribedArchetypes, coachProfile, userRole } = useUserWorkspace();
+  const {
+    activeUser,
+    prescribedArchetypes,
+    setPrescribedArchetypes,
+    coachProfile,
+    userRole,
+    managedClient,
+    assignClientArchetypes,
+  } = useUserWorkspace();
 
   const storageKey = useMemo(() => {
     return activeUser?.id ? `${STORAGE_KEY_PREFIX}_${activeUser.id}` : STORAGE_KEY_PREFIX;
@@ -47,9 +56,6 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
   const [showModal, setShowModal] = useState(false);
   const [editingArchetype, setEditingArchetype] = useState<MealArchetype | null>(null);
 
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [importJsonText, setImportJsonText] = useState('');
-
   // Form states for new/editing archetype
   const [formName, setFormName] = useState('');
   const [formEmoji, setFormEmoji] = useState('🥗');
@@ -57,6 +63,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
   const [formProtein, setFormProtein] = useState('');
   const [formCarbs, setFormCarbs] = useState('');
   const [formFats, setFormFats] = useState('');
+  const [formRecipe, setFormRecipe] = useState('');
 
   // Load archetypes from AsyncStorage
   useEffect(() => {
@@ -114,6 +121,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
       protein: archetype.protein,
       carbs: archetype.carbs,
       fats: archetype.fats,
+      recipe: archetype.recipe || archetype.instructions,
     });
   };
 
@@ -127,6 +135,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
     setFormProtein('');
     setFormCarbs('');
     setFormFats('');
+    setFormRecipe('');
     setShowModal(true);
   };
 
@@ -140,6 +149,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
     setFormProtein(arch.protein > 0 ? arch.protein.toString() : '');
     setFormCarbs(arch.carbs > 0 ? arch.carbs.toString() : '');
     setFormFats(arch.fats > 0 ? arch.fats.toString() : '');
+    setFormRecipe(arch.recipe || arch.instructions || '');
     setShowModal(true);
   };
 
@@ -157,22 +167,72 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
 
     // Auto-calculate calories if left blank
     const finalCalories = userCals > 0 ? userCals : Math.round(p * 4 + c * 4 + f * 9);
+    const cleanedRecipe = formRecipe.trim() || undefined;
 
     if (editingArchetype) {
-      const updated = archetypes.map((a) =>
-        a.id === editingArchetype.id
-          ? {
-              ...a,
-              name: formName.trim(),
-              emoji: formEmoji.trim() || '🍱',
-              calories: finalCalories,
-              protein: p,
-              carbs: c,
-              fats: f,
-            }
-          : a
-      );
-      saveArchetypes(updated);
+      const isPrescribed =
+        (prescribedArchetypes || []).some((pa) => pa.id === editingArchetype.id) ||
+        (managedClient?.prescribedArchetypes || []).some((pa) => pa.id === editingArchetype.id);
+
+      if (isPrescribed) {
+        setPrescribedArchetypes((prev) =>
+          prev.map((pa) =>
+            pa.id === editingArchetype.id
+              ? {
+                  ...pa,
+                  name: formName.trim(),
+                  emoji: formEmoji.trim() || '🍱',
+                  calories: finalCalories,
+                  protein: p,
+                  carbs: c,
+                  fats: f,
+                  recipe: cleanedRecipe,
+                  instructions: cleanedRecipe,
+                }
+              : pa
+          )
+        );
+        if (managedClient) {
+          assignClientArchetypes(
+            managedClient.id,
+            (managedClient.prescribedArchetypes || []).map((pa) =>
+              pa.id === editingArchetype.id
+                ? {
+                    ...pa,
+                    name: formName.trim(),
+                    emoji: formEmoji.trim() || '🍱',
+                    calories: finalCalories,
+                    protein: p,
+                    carbs: c,
+                    fats: f,
+                    recipe: cleanedRecipe,
+                    instructions: cleanedRecipe,
+                  }
+                : pa
+            )
+          );
+        }
+      }
+
+      const existsInArchetypes = archetypes.some((a) => a.id === editingArchetype.id);
+      if (existsInArchetypes) {
+        const updated = archetypes.map((a) =>
+          a.id === editingArchetype.id
+            ? {
+                ...a,
+                name: formName.trim(),
+                emoji: formEmoji.trim() || '🍱',
+                calories: finalCalories,
+                protein: p,
+                carbs: c,
+                fats: f,
+                recipe: cleanedRecipe,
+                instructions: cleanedRecipe,
+              }
+            : a
+        );
+        saveArchetypes(updated);
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } else {
       const created: MealArchetype = {
@@ -184,17 +244,39 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
         carbs: c,
         fats: f,
         isCustom: true,
+        recipe: cleanedRecipe,
+        instructions: cleanedRecipe,
         prescribedBy: userRole === 'coach' ? coachProfile.businessName || coachProfile.name : undefined,
       };
       const updated = [...archetypes, created];
       saveArchetypes(updated);
+
+      // If currently managing a client, automatically allocate this new meal archetype to the client!
+      if (managedClient) {
+        const newPrescribed: PrescribedMealArchetype = {
+          id: created.id,
+          name: created.name,
+          emoji: created.emoji,
+          calories: created.calories,
+          protein: created.protein,
+          carbs: created.carbs,
+          fats: created.fats,
+          prescribedBy: coachProfile.businessName || coachProfile.name || 'Personal Trainer',
+          instructions: created.recipe || created.instructions,
+        };
+        const currentPrescribed = managedClient.prescribedArchetypes || [];
+        const nextPrescribed = [...currentPrescribed, newPrescribed];
+        assignClientArchetypes(managedClient.id, nextPrescribed);
+        setPrescribedArchetypes((prev) => [...prev, newPrescribed]);
+      }
+
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
 
     setShowModal(false);
   };
 
-  // Delete archetype (works on both default and custom!)
+  // Delete archetype (works on default, prescribed, and custom!)
   const handleDeleteArchetype = (arch: MealArchetype) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Alert.alert('Delete Archetype', `Are you sure you want to remove "${arch.name}"?`, [
@@ -204,14 +286,51 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
         style: 'destructive',
         onPress: () => {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          // 1. Remove from local stored archetypes
           const updated = archetypes.filter((a) => a.id !== arch.id);
           saveArchetypes(updated);
+
+          // 2. Remove from prescribedArchetypes in context
+          setPrescribedArchetypes((prev) => prev.filter((pa) => pa.id !== arch.id));
+
+          // 3. Remove from managedClient if currently managing a client
+          if (managedClient) {
+            assignClientArchetypes(
+              managedClient.id,
+              (managedClient.prescribedArchetypes || []).filter((pa) => pa.id !== arch.id)
+            );
+          }
+
           if (editingArchetype?.id === arch.id) {
             setShowModal(false);
           }
         },
       },
     ]);
+  };
+
+  // Clear all archetypes (presets and prescribed)
+  const handleClearAll = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      'Clear All Presets?',
+      'Are you sure you want to remove all meal presets and prescribed archetypes? You can restore defaults at any time.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: () => {
+            saveArchetypes([]);
+            setPrescribedArchetypes([]);
+            if (managedClient) {
+              assignClientArchetypes(managedClient.id, []);
+            }
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          },
+        },
+      ]
+    );
   };
 
   // Reset to original factory defaults
@@ -237,10 +356,17 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
   // Long-press options menu
   const handleCardLongPress = (arch: MealArchetype) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    const recipeText = arch.recipe || arch.instructions;
     Alert.alert(
       `${arch.emoji} ${arch.name}`,
-      `${arch.calories} kcal • ${arch.protein}g P • ${arch.carbs}g C • ${arch.fats}g F`,
+      `${arch.calories} kcal • ${arch.protein}g P • ${arch.carbs}g C • ${arch.fats}g F${
+        recipeText ? `\n\n📝 Recipe / Ingredients:\n${recipeText}` : ''
+      }`,
       [
+        {
+          text: 'Log This Meal',
+          onPress: () => handleQuickLog(arch),
+        },
         {
           text: 'Edit Preset',
           onPress: () => openEditModal(arch),
@@ -250,47 +376,18 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
           style: 'destructive',
           onPress: () => handleDeleteArchetype(arch),
         },
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Close', style: 'cancel' },
       ]
     );
   };
 
-  // Import Coach Plan from JSON
-  const handleImportPlan = () => {
-    try {
-      if (!importJsonText.trim()) {
-        Alert.alert('Empty', 'Please paste plan JSON.');
-        return;
-      }
-      const parsed = JSON.parse(importJsonText.trim());
-      if (Array.isArray(parsed)) {
-        const validated: MealArchetype[] = parsed.map((item, idx) => ({
-          id: item.id || `arch_imported_${Date.now()}_${idx}`,
-          name: item.name || 'Imported Meal',
-          emoji: item.emoji || '🍱',
-          calories: item.calories || 0,
-          protein: item.protein || 0,
-          carbs: item.carbs || 0,
-          fats: item.fats || 0,
-          isCustom: true,
-          instructions: item.instructions,
-        }));
-        const updated = [...archetypes, ...validated];
-        saveArchetypes(updated);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setShowImportModal(false);
-        setImportJsonText('');
-        Alert.alert('Imported', `Successfully imported ${validated.length} meal presets!`);
-      } else {
-        Alert.alert('Format Error', 'Expected a list of meal archetype objects.');
-      }
-    } catch {
-      Alert.alert('Invalid JSON', 'Could not parse JSON. Check the format.');
-    }
-  };
-
   // Combine stored user archetypes with any coach prescribed archetypes
-  const prescribedList: MealArchetype[] = (prescribedArchetypes || []).map((pa) => ({
+  const isCoachUser = userRole === 'coach';
+  const prescribedSource = managedClient
+    ? managedClient.prescribedArchetypes || []
+    : prescribedArchetypes || [];
+
+  const prescribedList: MealArchetype[] = prescribedSource.map((pa) => ({
     id: pa.id,
     name: pa.name,
     emoji: pa.emoji,
@@ -299,8 +396,11 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
     carbs: pa.carbs,
     fats: pa.fats,
     isCustom: true,
-    prescribedBy: pa.prescribedBy || coachProfile.businessName || 'Coach',
+    prescribedBy: isCoachUser
+      ? pa.prescribedBy || coachProfile.businessName || 'Coach'
+      : pa.prescribedBy || 'Coach',
     instructions: pa.instructions,
+    recipe: pa.recipe || pa.instructions,
   }));
 
   // Prescribed archetypes shown first, followed by stored archetypes
@@ -314,14 +414,18 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
     <View className="mb-4">
       {/* Section Header with Controls */}
       <View className="flex-row items-center justify-between px-1 mb-2">
-        <View className="flex-row items-center space-x-1.5">
+        <View className="flex-row items-center space-x-1.5 flex-1 mr-2 min-w-0">
           <Ionicons name="flash-outline" size={15} color="#06B6D4" />
-          <Text className="text-xs font-black text-cyan-400 uppercase tracking-wider">
-            Quick-Add Meal Archetypes
+          <Text
+            className="text-xs font-black text-cyan-400 uppercase tracking-wider"
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            Meal Archetypes
           </Text>
         </View>
 
-        <View className="flex-row items-center space-x-2">
+        <View className="flex-row items-center space-x-1.5 shrink-0">
           {/* + New Button */}
           <TouchableOpacity
             onPress={openCreateModal}
@@ -356,26 +460,32 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
               {isManaging ? 'Done' : 'Manage'}
             </Text>
           </TouchableOpacity>
-
-          {/* Reset Defaults button (visible only in Manage mode) */}
-          {isManaging && (
-            <TouchableOpacity
-              onPress={handleResetDefaults}
-              className="bg-zinc-800/90 border border-zinc-750 px-2 py-0.5 rounded-md"
-            >
-              <Text className="text-[10px] font-bold text-zinc-400">Reset</Text>
-            </TouchableOpacity>
-          )}
-
-          {/* Import JSON Button */}
-          <TouchableOpacity
-            onPress={() => setShowImportModal(true)}
-            className="bg-zinc-800 px-2 py-0.5 rounded-md border border-zinc-750"
-          >
-            <Text className="text-[10px] font-bold text-zinc-400">Import</Text>
-          </TouchableOpacity>
         </View>
       </View>
+
+      {/* Management Toolbar (visible only in Manage mode) */}
+      {isManaging && (
+        <View className="flex-row items-center justify-between bg-zinc-900/90 border border-zinc-800 px-3 py-1.5 rounded-xl mb-2.5 mx-1">
+          <Text className="text-[10px] text-zinc-400 font-semibold">Presets Manager</Text>
+          <View className="flex-row items-center space-x-2">
+            <TouchableOpacity
+              onPress={handleClearAll}
+              className="bg-rose-500/10 border border-rose-500/30 px-2 py-1 rounded-lg flex-row items-center space-x-1"
+            >
+              <Ionicons name="trash-outline" size={11} color="#F43F5E" />
+              <Text className="text-[10px] font-bold text-rose-400">Clear All</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleResetDefaults}
+              className="bg-zinc-800 border border-zinc-700 px-2 py-1 rounded-lg flex-row items-center space-x-1"
+            >
+              <Ionicons name="refresh-outline" size={11} color="#A1A1AA" />
+              <Text className="text-[10px] font-bold text-zinc-300">Reset</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Horizontal Carousel */}
       <ScrollView
@@ -409,7 +519,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                 }
               }}
               onLongPress={() => handleCardLongPress(arch)}
-              className={`border mr-2.5 p-3 rounded-2xl w-44 justify-between shadow-sm relative ${
+              className={`border mr-2.5 p-3 rounded-2xl w-48 justify-between shadow-sm relative ${
                 isManaging
                   ? 'border-cyan-500/60 bg-zinc-900/90'
                   : arch.prescribedBy
@@ -417,46 +527,40 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                   : 'bg-dark-card border-dark-border'
               }`}
             >
-              {/* Manage Mode Overlays: Delete & Edit Badges */}
-              {isManaging ? (
-                <>
-                  {/* Top-Right Trash Delete Button */}
-                  <TouchableOpacity
-                    onPress={(e) => {
-                      e.stopPropagation?.();
-                      handleDeleteArchetype(arch);
-                    }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    className="absolute -top-2 -right-2 bg-rose-600 w-6 h-6 rounded-full items-center justify-center shadow-lg border-2 border-zinc-950 z-20"
-                  >
-                    <Ionicons name="trash" size={11} color="#FFFFFF" />
-                  </TouchableOpacity>
-
-                  {/* Top-Left Edit Indicator */}
-                  <View className="absolute top-2 left-2 bg-cyan-500/20 px-1.5 py-0.5 rounded border border-cyan-500/40">
-                    <Text className="text-[8px] font-black text-cyan-400">EDIT</Text>
+              {/* Top Row: Emoji & Status Badges */}
+              <View className="flex-row items-center justify-between mb-1.5">
+                <Text className="text-xl">{arch.emoji}</Text>
+                {isManaging ? (
+                  <View className="flex-row items-center space-x-1">
+                    <View className="bg-cyan-500/20 px-1.5 py-0.5 rounded border border-cyan-500/40">
+                      <Text className="text-[8px] font-black text-cyan-400">EDIT</Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={(e) => {
+                        e.stopPropagation?.();
+                        handleDeleteArchetype(arch);
+                      }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      className="bg-rose-600 w-5 h-5 rounded-full items-center justify-center shadow-lg"
+                    >
+                      <Ionicons name="trash" size={10} color="#FFFFFF" />
+                    </TouchableOpacity>
                   </View>
-                </>
-              ) : (
-                <>
-                  {arch.prescribedBy ? (
-                    <View className="absolute top-2 right-2 bg-emerald-500/20 px-1.5 py-0.5 rounded border border-emerald-500/40">
-                      <Text className="text-[8px] font-black text-emerald-400">COACH</Text>
-                    </View>
-                  ) : arch.isCustom ? (
-                    <View className="absolute top-2 right-2 bg-cyan-500/15 px-1.5 py-0.5 rounded">
-                      <Text className="text-[8px] font-bold text-cyan-400">CUSTOM</Text>
-                    </View>
-                  ) : null}
-                </>
-              )}
-
-              <View className="flex-row items-center space-x-1.5 mb-1.5 pr-8 mt-1">
-                <Text className="text-lg">{arch.emoji}</Text>
-                <Text className="text-xs font-extrabold text-white flex-1" numberOfLines={1}>
-                  {arch.name}
-                </Text>
+                ) : arch.prescribedBy ? (
+                  <View className="bg-emerald-500/20 px-1.5 py-0.5 rounded border border-emerald-500/40">
+                    <Text className="text-[8px] font-black text-emerald-400">COACH</Text>
+                  </View>
+                ) : arch.isCustom ? (
+                  <View className="bg-cyan-500/15 px-1.5 py-0.5 rounded">
+                    <Text className="text-[8px] font-bold text-cyan-400">CUSTOM</Text>
+                  </View>
+                ) : null}
               </View>
+
+              {/* Title with full width & up to 2 lines without truncation */}
+              <Text className="text-xs font-extrabold text-white mb-2 leading-tight" numberOfLines={2}>
+                {arch.name}
+              </Text>
 
               <View className="flex-row items-baseline justify-between mt-0.5 mb-1.5">
                 <Text className="text-base font-black text-accent-cyan">{arch.calories}</Text>
@@ -469,10 +573,13 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                 <Text className="text-[10px] font-black text-amber-400">{arch.fats}g F</Text>
               </View>
 
-              {arch.instructions ? (
-                <Text className="text-[9px] text-zinc-400 italic mt-0.5" numberOfLines={1}>
-                  {arch.instructions}
-                </Text>
+              {(arch.recipe || arch.instructions) ? (
+                <View className="flex-row items-center space-x-1 mt-1 bg-zinc-900/80 rounded px-1.5 py-1 border border-zinc-800/60">
+                  <Ionicons name="receipt-outline" size={9} color="#06B6D4" />
+                  <Text className="text-[9px] text-zinc-300 italic flex-1" numberOfLines={1}>
+                    {arch.recipe || arch.instructions}
+                  </Text>
+                </View>
               ) : isManaging ? (
                 <Text className="text-[9px] text-cyan-400 font-semibold mt-0.5">
                   Tap to edit details
@@ -619,9 +726,29 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                   />
                 </View>
               </View>
-              <Text className="text-[10px] text-zinc-500 italic mb-4">
+              <Text className="text-[10px] text-zinc-500 italic mb-3">
                 💡 Leave Calories blank to auto-compute from (Protein × 4) + (Carbs × 4) + (Fats × 9).
               </Text>
+
+              {/* Recipe & Ingredients Field */}
+              <View className="mb-4">
+                <View className="flex-row items-center justify-between mb-1">
+                  <Text className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">
+                    Recipe & Ingredients (Optional)
+                  </Text>
+                  <Text className="text-[10px] text-zinc-500 italic">How you make it</Text>
+                </View>
+                <TextInput
+                  placeholder="e.g. 2 scoops whey, 100g oats, 1 banana, 400ml milk, 1 tbsp peanut butter"
+                  placeholderTextColor="#71717A"
+                  multiline
+                  numberOfLines={3}
+                  value={formRecipe}
+                  onChangeText={setFormRecipe}
+                  textAlignVertical="top"
+                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-white text-xs leading-relaxed min-h-[70px]"
+                />
+              </View>
 
               {/* Save Button */}
               <TouchableOpacity
@@ -647,49 +774,6 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
-      </Modal>
-
-      {/* IMPORT PLAN MODAL */}
-      <Modal visible={showImportModal} transparent animationType="slide">
-        <View className="flex-1 bg-black/80 justify-center px-4">
-          <View className="bg-dark-card border border-zinc-800 p-5 rounded-3xl">
-            <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-2">
-              <Text className="text-base font-black text-white">Import Prescribed Archetypes</Text>
-              <TouchableOpacity onPress={() => setShowImportModal(false)}>
-                <Ionicons name="close" size={24} color="#A1A1AA" />
-              </TouchableOpacity>
-            </View>
-
-            <Text className="text-xs text-zinc-400 mb-3">
-              Paste the JSON meal template exported from your coach to add their prescribed staples to your 1-tap list:
-            </Text>
-
-            <TextInput
-              multiline
-              numberOfLines={6}
-              value={importJsonText}
-              onChangeText={setImportJsonText}
-              placeholder='[{"name": "Post-Workout Shake", "emoji": "🥤", "calories": 320, "protein": 45, "carbs": 30, "fats": 2}]'
-              placeholderTextColor="#71717A"
-              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-mono text-xs mb-4 max-h-36"
-            />
-
-            <View className="flex-row space-x-2">
-              <TouchableOpacity
-                onPress={() => setShowImportModal(false)}
-                className="flex-1 bg-zinc-800 py-3 rounded-xl items-center"
-              >
-                <Text className="text-zinc-300 font-bold text-xs">Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={handleImportPlan}
-                className="flex-1 bg-accent-cyan py-3 rounded-xl items-center"
-              >
-                <Text className="text-black font-black text-xs">Import Presets</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
       </Modal>
     </View>
   );

@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { JamConnectionStatus, JamRole } from '../types/gymjam';
 import { QRCodeView } from './QRCodeView';
+import { QRCodeScannerModal } from './QRCodeScannerModal';
 
 interface GymJamLobbyModalProps {
   visible: boolean;
@@ -48,6 +49,14 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
   const [activeTab, setActiveTab] = useState<'host' | 'join'>('host');
   const [pinInput, setPinInput] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
+
+  const handleScannedCode = (scannedCode: string) => {
+    setShowScanner(false);
+    const clean = scannedCode.trim().toUpperCase();
+    setPinInput(clean);
+    onJoinSession(clean);
+  };
 
   // Auto initialize host room if opening modal with disconnected status
   useEffect(() => {
@@ -61,8 +70,8 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
     Haptics.selectionAsync();
     try {
       await Share.share({
-        message: `Join my Gym Jam session on Pumpd! Room PIN: ${roomPin}`,
-        title: 'Pumpd Gym Jam Invitation',
+        message: `Join my RIPPED BUDDY session on RIPPED! Room PIN: ${roomPin}`,
+        title: 'RIPPED BUDDY Invitation',
       });
     } catch (err) {
       // Ignored
@@ -72,7 +81,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
   const handleJoin = async () => {
     const clean = pinInput.trim().toUpperCase();
     if (!clean) {
-      Alert.alert('Missing Code', 'Please enter the room code (e.g. PUMP-42 or 42).');
+      Alert.alert('Missing Code', 'Please enter the room code (e.g. RIP-42 or 42).');
       return;
     }
 
@@ -100,13 +109,13 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
         <View className="bg-dark-card border-t border-dark-border rounded-t-3xl p-5 max-h-[90%] shadow-2xl">
           {/* Modal Header */}
           <View className="flex-row items-center justify-between pb-3 border-b border-zinc-800">
-            <View className="flex-row items-center space-x-2">
-              <View className="w-8 h-8 rounded-full bg-cyan-500/20 border border-cyan-400 items-center justify-center">
+            <View className="flex-row items-center space-x-2.5 flex-1 min-w-0 mr-2">
+              <View className="w-8 h-8 rounded-full bg-cyan-500/20 border border-cyan-400 items-center justify-center shrink-0">
                 <Ionicons name="radio-outline" size={18} color="#06B6D4" />
               </View>
-              <View>
-                <Text className="text-lg font-black text-white">Gym Jam Co-Op</Text>
-                <Text className="text-[10px] font-semibold text-accent-cyan">
+              <View className="flex-1 min-w-0">
+                <Text className="text-lg font-black text-white" numberOfLines={1}>RIPPED BUDDY Co-Op</Text>
+                <Text className="text-[10px] font-semibold text-accent-cyan" numberOfLines={1}>
                   Real-Time Cloud Co-Op (Cross-Device)
                 </Text>
               </View>
@@ -114,7 +123,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
 
             <TouchableOpacity
               onPress={onClose}
-              className="w-8 h-8 rounded-full bg-zinc-850 items-center justify-center border border-zinc-700"
+              className="w-8 h-8 rounded-full bg-zinc-850 items-center justify-center border border-zinc-700 shrink-0"
             >
               <Ionicons name="close" size={18} color="#A1A1AA" />
             </TouchableOpacity>
@@ -140,7 +149,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                     onPress={onDisconnect}
                     className="flex-1 bg-zinc-900 border border-zinc-750 py-3 rounded-xl items-center"
                   >
-                    <Text className="text-xs font-bold text-rose-400">Leave Jam</Text>
+                    <Text className="text-xs font-bold text-rose-400">Leave Buddy</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -170,7 +179,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                         activeTab === 'host' ? 'text-black' : 'text-zinc-400'
                       }`}
                     >
-                      ⚡ Host a Jam
+                      ⚡ Host RIPPED BUDDY
                     </Text>
                   </TouchableOpacity>
 
@@ -188,7 +197,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                         activeTab === 'join' ? 'text-black' : 'text-zinc-400'
                       }`}
                     >
-                      🔗 Join Partner
+                      🔗 Join RIPPED BUDDY
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -214,7 +223,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                     {/* Short Room PIN Display */}
                     <View className="flex-row items-center space-x-2 my-2 bg-zinc-900 border border-zinc-700 px-4 py-2 rounded-xl">
                       <Text className="text-2xl font-mono font-black text-accent-cyan tracking-widest">
-                        {roomPin || 'PUMP-..'}
+                        {roomPin || 'RIP-..'}
                       </Text>
                       <TouchableOpacity
                         onPress={handleSharePin}
@@ -237,14 +246,29 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                 {/* TAB 2: JOIN SESSION */}
                 {activeTab === 'join' && (
                   <View className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5 mb-3">
-                    <Text className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2">
-                      Enter Host's Room Code
-                    </Text>
+                    {/* Instant Camera Scan Button */}
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setShowScanner(true);
+                      }}
+                      className="bg-cyan-500/15 border border-cyan-500/60 py-3.5 rounded-xl items-center justify-center flex-row space-x-2 mb-4 shadow-sm"
+                    >
+                      <Ionicons name="camera" size={18} color="#06B6D4" />
+                      <Text className="text-xs font-black text-cyan-300">Scan Host's QR Code</Text>
+                    </TouchableOpacity>
+
+                    <View className="flex-row items-center mb-3">
+                      <View className="flex-1 h-[1px] bg-zinc-800" />
+                      <Text className="text-[10px] font-bold text-zinc-500 uppercase mx-2.5">Or Enter Room Code</Text>
+                      <View className="flex-1 h-[1px] bg-zinc-800" />
+                    </View>
 
                     <TextInput
                       value={pinInput}
                       onChangeText={(val) => setPinInput(val.toUpperCase())}
-                      placeholder="PUMP-42 or 42"
+                      placeholder="RIP-42 or 42"
                       placeholderTextColor="#52525B"
                       autoCapitalize="characters"
                       className="bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3.5 text-2xl font-mono font-black text-accent-cyan text-center mb-4 tracking-widest"
@@ -257,7 +281,7 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
                     >
                       <Ionicons name="link" size={18} color="#09090B" />
                       <Text className="text-sm font-black text-black">
-                        {isJoining ? 'Connecting to Jam...' : 'Join Gym Jam'}
+                        {isJoining ? 'Connecting to RIPPED BUDDY...' : 'Join RIPPED BUDDY'}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -269,12 +293,20 @@ export const GymJamLobbyModal: React.FC<GymJamLobbyModalProps> = ({
             <View className="bg-zinc-900/40 rounded-xl p-3 border border-zinc-850 my-2">
               <Text className="text-[11px] text-zinc-400 leading-relaxed">
                 💡 <Text className="font-bold text-zinc-300">Cloud Real-Time Co-Op:</Text>{' '}
-                Both lifters take turns performing sets, synchronize rest timers, and advance exercises
-                together across devices in real time.
+                Workout partners share a live mirrored workout sheet. Tap your partner's name at the top to log sets, add working sets together, and synchronize your session in real time.
               </Text>
             </View>
           </ScrollView>
         </View>
+
+        {/* Camera QR Scanner Modal */}
+        <QRCodeScannerModal
+          visible={showScanner}
+          onClose={() => setShowScanner(false)}
+          onScanned={handleScannedCode}
+          title="Scan RIPPED BUDDY QR"
+          subtitle="Align host's RIPPED BUDDY QR code in frame"
+        />
       </KeyboardAvoidingView>
     </Modal>
   );

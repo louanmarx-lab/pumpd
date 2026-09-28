@@ -16,6 +16,7 @@ import { useUserWorkspace } from '../context/UserWorkspaceContext';
 import { shareRoutineCloud } from '../services/shareSplitService';
 import { ShareWorkoutModal } from './workouts/ShareWorkoutModal';
 import { Routine } from '../types';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface WorkoutReceiptModalProps {
   visible: boolean;
@@ -28,6 +29,7 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
   receiptData,
   onClose,
 }) => {
+  const insets = useSafeAreaInsets();
   const { activeUser, splits, exercises } = useUserWorkspace();
   const [showShareRoutineModal, setShowShareRoutineModal] = useState(false);
   const [routineShareCode, setRoutineShareCode] = useState<string | null>(null);
@@ -43,26 +45,29 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
     return `${mins}m ${secs}s`;
   };
 
+  const unit = activeUser.weightUnit || 'kg';
+
   const handleShare = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     const shareLines = [
-      `🧾 PUMPD PERFORMANCE RECEIPT`,
+      `🧾 RIPPED PERFORMANCE RECEIPT`,
       `━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+      ...(receiptData.athleteName ? [`👤 Athlete: ${receiptData.athleteName}`] : []),
       `🏋️ ${receiptData.routineName}`,
       `⏱️ Duration: ${formatDuration(receiptData.durationSeconds)}`,
-      `📦 Volume: ${receiptData.totalVolumeKg.toLocaleString()} kg moved`,
+      `📦 Volume: ${receiptData.totalVolumeKg.toLocaleString()} ${unit} moved`,
       `🎯 Total Sets: ${receiptData.totalSets} completed`,
     ];
 
     if (receiptData.bestLift) {
       shareLines.push(
-        `⭐ Top Set: ${receiptData.bestLift.exerciseName} - ${receiptData.bestLift.weightKg}kg × ${receiptData.bestLift.reps}`
+        `⭐ Top Set: ${receiptData.bestLift.exerciseName} - ${receiptData.bestLift.weightKg}${unit} × ${receiptData.bestLift.reps}`
       );
     }
 
     if (receiptData.gymJamBuddy) {
-      shareLines.push(`🤝 Trained with ${receiptData.gymJamBuddy.name} (Jam: ${receiptData.gymJamBuddy.roomPin})`);
+      shareLines.push(`🤝 Trained with ${receiptData.gymJamBuddy.name} (RIPPED BUDDY: ${receiptData.gymJamBuddy.roomPin})`);
     }
 
     if (receiptData.coachAttribution) {
@@ -80,20 +85,20 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
     }
 
     shareLines.push(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    shareLines.push(`Logged with Pumpd. No shortcuts.`);
+    shareLines.push(`Logged with RIPPED. No shortcuts.`);
 
     const message = shareLines.join('\n');
 
     try {
       if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.share) {
         await navigator.share({
-          title: `Pumpd Receipt - ${receiptData.routineName}`,
+          title: `RIPPED Receipt - ${receiptData.routineName}`,
           text: message,
         });
       } else {
         await Share.share({
           message,
-          title: `Pumpd Receipt - ${receiptData.routineName}`,
+          title: `RIPPED Receipt - ${receiptData.routineName}`,
         });
       }
     } catch (err: any) {
@@ -168,7 +173,8 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
         {/* Close Button Top Right */}
         <TouchableOpacity
           onPress={onClose}
-          className="absolute top-12 right-6 z-50 w-10 h-10 rounded-full bg-zinc-800/90 border border-zinc-700 items-center justify-center"
+          style={{ top: Math.max(insets.top + 8, 48) }}
+          className="absolute right-6 z-50 w-10 h-10 rounded-full bg-zinc-800/90 border border-zinc-700 items-center justify-center shadow-lg"
         >
           <Ionicons name="close" size={20} color="#FFFFFF" />
         </TouchableOpacity>
@@ -196,11 +202,16 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
             <View className="items-center pb-4 border-b border-dashed border-zinc-700">
               <View className="flex-row items-center space-x-1.5 mb-1">
                 <Ionicons name="fitness" size={20} color="#06B6D4" />
-                <Text className="text-xl font-black text-white tracking-widest">PUMPD</Text>
+                <Text className="text-xl font-black text-white tracking-widest">RIPPED</Text>
               </View>
               <Text className="text-[10px] font-mono tracking-widest text-zinc-400 uppercase">
                 // PERFORMANCE RECEIPT //
               </Text>
+              {receiptData.athleteName ? (
+                <Text className="text-xs font-black text-white mt-1">
+                  Athlete: {receiptData.athleteName}
+                </Text>
+              ) : null}
               <Text className="text-[10px] font-mono text-zinc-500 mt-1">
                 {receiptData.date} • {receiptData.id}
               </Text>
@@ -245,7 +256,7 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
                 </View>
                 <View className="flex-1">
                   <Text className="text-[9px] font-mono font-bold text-cyan-400 uppercase">
-                    Gym Jam Co-Op Session
+                    RIPPED BUDDY Co-Op Session
                   </Text>
                   <Text className="text-xs font-black text-white">
                     Trained with {receiptData.gymJamBuddy.name}
@@ -276,7 +287,7 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
                   <Text className="text-[10px] font-mono uppercase text-zinc-400">Total Volume</Text>
                   <Text className="text-2xl font-black text-accent-cyan mt-0.5">
                     {receiptData.totalVolumeKg.toLocaleString()}{' '}
-                    <Text className="text-xs text-white font-bold">kg</Text>
+                    <Text className="text-xs text-white font-bold">{unit}</Text>
                   </Text>
                 </View>
                 <View className="items-end">
@@ -317,7 +328,7 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
                     {receiptData.bestLift.exerciseName}
                   </Text>
                   <Text className="text-xs font-black text-amber-300">
-                    {receiptData.bestLift.weightKg} kg × {receiptData.bestLift.reps} reps
+                    {receiptData.bestLift.weightKg} {unit} × {receiptData.bestLift.reps} reps
                   </Text>
                 </View>
               </View>
@@ -337,7 +348,7 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
                     {item.exerciseName}
                   </Text>
                   <Text className="text-xs font-mono font-bold text-accent-cyan">
-                    {item.completedSetsCount}s • {item.topSetWeight}kg×{item.topSetReps}
+                    {item.completedSetsCount}s • {item.topSetWeight}{unit}×{item.topSetReps}
                   </Text>
                 </View>
               ))}

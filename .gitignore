@@ -10,4 +10,5 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 scratch/
+assets/preview_tests/
 

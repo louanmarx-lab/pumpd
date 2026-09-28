@@ -17,6 +17,7 @@ import { useUserWorkspace } from '../../../src/context/UserWorkspaceContext';
 import { calculateEmpiricalTDEE } from '../../../src/utils/tdee';
 import { MealArchetypesQuickAdd } from '../../../src/components/MealArchetypesQuickAdd';
 import { ProteinRecommendationCard } from '../../../src/components/ProteinRecommendationCard';
+import { Meal } from '../../../src/types';
 
 const getFormattedDate = (offsetDays: number = 0) => {
   const d = new Date(Date.now() + offsetDays * 86400000);
@@ -42,12 +43,24 @@ const SEGMENTS = Array.from({ length: TOTAL_SEGMENTS }, (_, i) => {
 export default function NutritionScreen() {
   const {
     activeUser,
+    managedClient,
     nutritionLogs,
     bodyMetrics,
     saveNutritionMeal,
     deleteNutritionMeal,
+    clearNutritionDay,
     updateMacroTargets,
+    saveWaterIntake,
   } = useUserWorkspace();
+
+  // When coach is managing a client, filter data by client IDs (not coach's own ID)
+  const effectiveUserId = managedClient
+    ? (managedClient.linkedUserId || managedClient.id)
+    : activeUser.id;
+  // All IDs that might own data for the effective user (client_XXX + linkedUserId)
+  const effectiveUserIds = managedClient
+    ? [managedClient.id, managedClient.linkedUserId].filter(Boolean) as string[]
+    : [activeUser.id];
 
   const todayStr = getFormattedDate(0);
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
@@ -80,10 +93,10 @@ export default function NutritionScreen() {
     return dateStr;
   };
 
-  // 4-Week Empirical Maintenance (TDEE) Calculation (scoped to activeUser)
+  // 4-Week Empirical Maintenance (TDEE) Calculation (scoped to effective user)
   const tdeeResult = useMemo(() => {
-    return calculateEmpiricalTDEE(activeUser.id, nutritionLogs, bodyMetrics);
-  }, [activeUser.id, nutritionLogs, bodyMetrics]);
+    return calculateEmpiricalTDEE(effectiveUserId, nutritionLogs, bodyMetrics);
+  }, [effectiveUserId, nutritionLogs, bodyMetrics]);
 
   const handleSetTDEEAsTarget = (newTdee: number) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -106,6 +119,7 @@ export default function NutritionScreen() {
   const [fats, setFats] = useState('');
   const [mealDateOption, setMealDateOption] = useState<'selected' | 'today' | 'yesterday' | 'custom'>('selected');
   const [customMealDate, setCustomMealDate] = useState(todayStr);
+  const [mealRecipe, setMealRecipe] = useState('');
 
   // Target Editing State
   const [showEditTargetsModal, setShowEditTargetsModal] = useState(false);
@@ -113,12 +127,23 @@ export default function NutritionScreen() {
   const [targetProteinInput, setTargetProteinInput] = useState('');
   const [targetCarbsInput, setTargetCarbsInput] = useState('');
   const [targetFatsInput, setTargetFatsInput] = useState('');
+  const [targetWaterInput, setTargetWaterInput] = useState('');
 
-  // Find log for active user & selected date
-  const activeLog = nutritionLogs.find(
-    (l) => l.userId === activeUser.id && l.date === currentDateStr
+  // Dedicated Hydration Goal Modal & Custom/Exact Water Log States
+  const [showEditHydrationGoalModal, setShowEditHydrationGoalModal] = useState(false);
+  const [goalWaterInput, setGoalWaterInput] = useState('');
+  const [customWaterInput, setCustomWaterInput] = useState('');
+
+  // Find logs for effective user & selected date (merges across shadow ID and linked athlete ID)
+  const activeDayLogs = nutritionLogs.filter(
+    (l) => effectiveUserIds.includes(l.userId) && l.date === currentDateStr
   );
-  const meals = activeLog ? activeLog.meals : [];
+  const activeLog = activeDayLogs[0] || null;
+  const mealMap = new Map<string, Meal>();
+  activeDayLogs.forEach((log) => {
+    (log.meals || []).forEach((m) => mealMap.set(m.id, m));
+  });
+  const meals = Array.from(mealMap.values());
 
   // Aggregated macros
   const totals = meals.reduce(
@@ -131,12 +156,16 @@ export default function NutritionScreen() {
     { calories: 0, protein: 0, carbs: 0, fats: 0 }
   );
 
-  const targets = activeUser.macroTargets || {
+  // Use client's macro targets when managing a client, otherwise use own targets
+  const targets = (managedClient?.macroTargets || (managedClient ? null : activeUser.macroTargets)) || {
     calories: 2500,
     protein: 180,
     carbs: 250,
     fats: 70,
+    waterTargetMl: 3000,
   };
+
+  const waterTargetMl = targets.waterTargetMl || 3000;
 
   const openEditTargets = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -144,20 +173,78 @@ export default function NutritionScreen() {
     setTargetProteinInput(targets.protein.toString());
     setTargetCarbsInput(targets.carbs.toString());
     setTargetFatsInput(targets.fats.toString());
+    setTargetWaterInput(waterTargetMl.toString());
     setShowEditTargetsModal(true);
   };
 
-  // User's latest logged body weight for reactive metric updates
+  // Weight unit
+  const weightUnit = activeUser.weightUnit || 'kg';
+  const isImperial = weightUnit === 'lbs';
+
+  // Daily Hydration state & actions
+  const currentWaterMl = activeDayLogs.reduce((max, l) => Math.max(max, l.waterMl || 0), 0);
+  const waterPercent = Math.min(100, Math.round((currentWaterMl / waterTargetMl) * 100));
+
+  const handleAddWater = (deltaMl: number) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const newTotal = Math.max(0, currentWaterMl + deltaMl);
+    saveWaterIntake(currentDateStr, newTotal);
+  };
+
+  const handleLogExactWater = (amount?: number) => {
+    const ml = amount ?? parseInt(customWaterInput.trim(), 10);
+    if (!ml || isNaN(ml) || ml <= 0) {
+      Alert.alert('Enter Amount', 'Please enter a valid amount in ml to add.');
+      return;
+    }
+    handleAddWater(ml);
+    setCustomWaterInput('');
+  };
+
+  const handleSaveHydrationGoal = (presetMl?: number) => {
+    const chosen = presetMl ?? parseInt(goalWaterInput.trim(), 10);
+    if (!chosen || isNaN(chosen) || chosen < 500) {
+      Alert.alert('Invalid Goal', 'Please enter a daily hydration goal of at least 500 ml.');
+      return;
+    }
+    updateMacroTargets({
+      ...targets,
+      waterTargetMl: chosen,
+    });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setShowEditHydrationGoalModal(false);
+  };
+
+  const handleResetWater = () => {
+    if (currentWaterMl === 0) return;
+    Alert.alert(
+      'Reset Hydration',
+      `Reset water intake for ${getDateLabel(selectedDate)} to 0 ml?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            saveWaterIntake(currentDateStr, 0);
+          },
+        },
+      ]
+    );
+  };
+
+  // User's latest logged body weight for reactive metric updates (uses client IDs if managing)
   const userMetrics = useMemo(() => {
     return bodyMetrics
       .filter(
         (m) =>
-          m.userId === activeUser.id &&
+          effectiveUserIds.includes(m.userId) &&
           typeof m.weightKg === 'number' &&
           m.weightKg > 0
       )
       .sort((a, b) => a.date.localeCompare(b.date));
-  }, [bodyMetrics, activeUser.id]);
+  }, [bodyMetrics, effectiveUserIds.join(',')]);
 
   const latestWeightKg =
     userMetrics.length > 0 ? userMetrics[userMetrics.length - 1].weightKg : 75;
@@ -167,6 +254,7 @@ export default function NutritionScreen() {
     const p = parseInt(targetProteinInput, 10) || 150;
     const cb = parseInt(targetCarbsInput, 10) || 200;
     const f = parseInt(targetFatsInput, 10) || 60;
+    const w = parseInt(targetWaterInput, 10) || waterTargetMl || 3000;
 
     if (c <= 0 && p <= 0 && cb <= 0 && f <= 0) {
       Alert.alert('Invalid Targets', 'Please enter valid target values.');
@@ -179,6 +267,7 @@ export default function NutritionScreen() {
       carbs: cb,
       fats: f,
       dailyProteinGoalGrams: p,
+      waterTargetMl: Math.max(500, w),
     });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowEditTargetsModal(false);
@@ -210,6 +299,7 @@ export default function NutritionScreen() {
       protein: pNum,
       carbs: cNum,
       fats: fNum,
+      recipe: mealRecipe.trim() || undefined,
       timestamp: Date.now(),
     });
 
@@ -220,6 +310,7 @@ export default function NutritionScreen() {
     setProtein('');
     setCarbs('');
     setFats('');
+    setMealRecipe('');
     setMealDateOption('selected');
     setShowAddMealModal(false);
   };
@@ -238,12 +329,32 @@ export default function NutritionScreen() {
     ]);
   };
 
+  const handleClearAllDayMeals = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      'Clear All Meals?',
+      `Are you sure you want to remove all logged meals for ${getDateLabel(selectedDate)}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: () => {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            clearNutritionDay(currentDateStr);
+          },
+        },
+      ]
+    );
+  };
+
   const handleQuickLogArchetype = (archetypeMeal: {
     label: string;
     calories: number;
     protein: number;
     carbs: number;
     fats: number;
+    recipe?: string;
   }) => {
     saveNutritionMeal(currentDateStr, {
       label: archetypeMeal.label,
@@ -251,6 +362,7 @@ export default function NutritionScreen() {
       protein: archetypeMeal.protein,
       carbs: archetypeMeal.carbs,
       fats: archetypeMeal.fats,
+      recipe: archetypeMeal.recipe,
       timestamp: Date.now(),
     });
   };
@@ -260,11 +372,12 @@ export default function NutritionScreen() {
     Math.min(100, Math.round((curr / Math.max(1, target)) * 100));
 
   return (
-    <ScrollView
-      className="flex-1 bg-dark-bg px-4 py-4"
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ paddingBottom: 40 }}
-    >
+    <View className="flex-1 bg-dark-bg">
+      <ScrollView
+        className="flex-1 px-4 py-4"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
+      >
       {/* Date Switcher Header */}
       <View className="flex-row items-center justify-between bg-dark-card border border-dark-border p-3 rounded-2xl mb-4">
         <TouchableOpacity
@@ -311,7 +424,7 @@ export default function NutritionScreen() {
               {latestWeightKg > 0 && (
                 <View className="bg-zinc-800/90 px-2 py-0.5 rounded-md border border-zinc-700">
                   <Text className="text-[11px] font-bold text-zinc-300">
-                    {latestWeightKg} kg
+                    {latestWeightKg} {weightUnit}
                   </Text>
                 </View>
               )}
@@ -386,13 +499,13 @@ export default function NutritionScreen() {
           ) : (
             <View>
               <View className="flex-row items-center justify-between mt-1">
-                <View className="flex-1 mr-2">
-                  <Text className="text-lg font-black text-accent-cyan">
+                <View className="flex-1 mr-2 min-w-0">
+                  <Text className="text-base sm:text-lg font-black text-accent-cyan" numberOfLines={1} adjustsFontSizeToFit>
                     Maintenance: {tdeeResult.tdee} kcal
                   </Text>
-                  <View className="flex-row items-center space-x-2 mt-1">
+                  <View className="flex-row items-center space-x-2 mt-1 flex-wrap">
                     <View
-                      className={`px-2 py-0.5 rounded ${
+                      className={`px-2 py-0.5 rounded shrink-0 ${
                         tdeeResult.slopeKgPerWeek > 0.05
                           ? 'bg-amber-500/20 border border-amber-500/40'
                           : tdeeResult.slopeKgPerWeek < -0.05
@@ -408,12 +521,13 @@ export default function NutritionScreen() {
                             ? 'text-emerald-400'
                             : 'text-cyan-400'
                         }`}
+                        numberOfLines={1}
                       >
                         Trending: {tdeeResult.slopeKgPerWeek >= 0 ? '+' : ''}
-                        {tdeeResult.slopeKgPerWeek.toFixed(2)} kg/week
+                        {tdeeResult.slopeKgPerWeek.toFixed(2)} {weightUnit}/week
                       </Text>
                     </View>
-                    <Text className="text-[10px] text-zinc-400 font-medium">
+                    <Text className="text-[10px] text-zinc-400 font-medium shrink-0" numberOfLines={1}>
                       avg {tdeeResult.avgCalories} kcal
                     </Text>
                   </View>
@@ -423,10 +537,10 @@ export default function NutritionScreen() {
                 <TouchableOpacity
                   activeOpacity={0.8}
                   onPress={() => handleSetTDEEAsTarget(tdeeResult.tdee)}
-                  className="bg-accent-cyan px-3.5 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20"
+                  className="bg-accent-cyan px-3 py-2 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20 shrink-0"
                 >
-                  <Ionicons name="checkmark-circle-outline" size={15} color="#09090B" />
-                  <Text className="text-black font-extrabold text-xs">Set as Target</Text>
+                  <Ionicons name="checkmark-circle-outline" size={14} color="#09090B" />
+                  <Text className="text-black font-extrabold text-xs">Set Target</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -482,7 +596,6 @@ export default function NutritionScreen() {
                         opacity: isActive ? 1 : 0.35,
                         shadowColor: isHead ? activeColor : undefined,
                         shadowOpacity: isHead ? 0.9 : 0,
-                        shadowRadius: isHead ? 6 : 0,
                       }}
                     />
                   );
@@ -495,12 +608,9 @@ export default function NutritionScreen() {
                   style={{ width: 156, height: 156, borderRadius: 78 }}
                   className="bg-zinc-950 border border-zinc-800/80 items-center justify-center px-4 shadow-xl"
                 >
-                  <View className="flex-row items-center space-x-1 mb-1">
-                    <Ionicons name="flame" size={16} color={activeColor} />
-                    <Text
-                      style={{ color: activeColor }}
-                      className="text-[11px] font-bold uppercase tracking-wider"
-                    >
+                  <View className="flex-row items-center space-x-1 mb-0.5">
+                    <Ionicons name="flame" size={13} color="#06B6D4" />
+                    <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
                       Daily Energy
                     </Text>
                   </View>
@@ -546,18 +656,18 @@ export default function NutritionScreen() {
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={openEditTargets}
-          className="flex-row space-x-3"
+          className="flex-row space-x-2"
         >
           {/* Protein */}
-          <View className="flex-1 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
+          <View className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl">
             <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-[11px] text-zinc-400 font-bold">PROTEIN</Text>
-              <Ionicons name="pencil-outline" size={11} color="#10B981" />
+              <Text className="text-[10px] text-zinc-400 font-bold" numberOfLines={1}>PROTEIN</Text>
+              <Ionicons name="pencil-outline" size={10} color="#10B981" />
             </View>
-            <Text className="text-base font-bold text-accent-emerald">
+            <Text className="text-base font-bold text-accent-emerald" numberOfLines={1} adjustsFontSizeToFit>
               {totals.protein}g
             </Text>
-            <Text className="text-[10px] text-zinc-500 mb-2">Target: {targets.protein}g</Text>
+            <Text className="text-[10px] text-zinc-500 mb-2" numberOfLines={1}>Target: {targets.protein}g</Text>
             <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
               <View
                 className="h-full bg-accent-emerald rounded-full"
@@ -567,15 +677,15 @@ export default function NutritionScreen() {
           </View>
 
           {/* Carbs */}
-          <View className="flex-1 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
+          <View className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl">
             <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-[11px] text-zinc-400 font-bold">CARBS</Text>
-              <Ionicons name="pencil-outline" size={11} color="#06B6D4" />
+              <Text className="text-[10px] text-zinc-400 font-bold" numberOfLines={1}>CARBS</Text>
+              <Ionicons name="pencil-outline" size={10} color="#06B6D4" />
             </View>
-            <Text className="text-base font-bold text-accent-cyan">
+            <Text className="text-base font-bold text-accent-cyan" numberOfLines={1} adjustsFontSizeToFit>
               {totals.carbs}g
             </Text>
-            <Text className="text-[10px] text-zinc-500 mb-2">Target: {targets.carbs}g</Text>
+            <Text className="text-[10px] text-zinc-500 mb-2" numberOfLines={1}>Target: {targets.carbs}g</Text>
             <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
               <View
                 className="h-full bg-accent-cyan rounded-full"
@@ -585,15 +695,15 @@ export default function NutritionScreen() {
           </View>
 
           {/* Fats */}
-          <View className="flex-1 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
+          <View className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl">
             <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-[11px] text-zinc-400 font-bold">FATS</Text>
-              <Ionicons name="pencil-outline" size={11} color="#F59E0B" />
+              <Text className="text-[10px] text-zinc-400 font-bold" numberOfLines={1}>FATS</Text>
+              <Ionicons name="pencil-outline" size={10} color="#F59E0B" />
             </View>
-            <Text className="text-base font-bold text-amber-400">
+            <Text className="text-base font-bold text-amber-400" numberOfLines={1} adjustsFontSizeToFit>
               {totals.fats}g
             </Text>
-            <Text className="text-[10px] text-zinc-500 mb-2">Target: {targets.fats}g</Text>
+            <Text className="text-[10px] text-zinc-500 mb-2" numberOfLines={1}>Target: {targets.fats}g</Text>
             <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
               <View
                 className="h-full bg-amber-400 rounded-full"
@@ -612,6 +722,156 @@ export default function NutritionScreen() {
           <Ionicons name="options-outline" size={16} color="#06B6D4" />
           <Text className="text-xs font-bold text-accent-cyan">Edit Daily Macro & Calorie Targets</Text>
         </TouchableOpacity>
+      </View>
+
+      {/* Daily Water / Hydration Tracker Card */}
+      <View className="bg-dark-card border border-dark-border p-5 rounded-2xl mb-5 shadow-md">
+        <View className="flex-row items-center justify-between mb-3">
+          <View className="flex-row items-center space-x-2.5 flex-1 pr-2">
+            <View className="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-500/40 items-center justify-center">
+              <Ionicons name="water" size={20} color="#38BDF8" />
+            </View>
+            <View className="flex-1">
+              <Text className="text-base font-bold text-white">Daily Hydration</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setGoalWaterInput(waterTargetMl.toString());
+                  setShowEditHydrationGoalModal(true);
+                }}
+                className="flex-row items-center space-x-1 mt-0.5"
+                activeOpacity={0.7}
+              >
+                <Text className="text-[11px] text-sky-400 font-semibold underline">
+                  Goal: {(waterTargetMl / 1000).toFixed(1)} L {isImperial ? `(${Math.round(waterTargetMl / 29.5735)} oz)` : `(${waterTargetMl.toLocaleString()} ml)`}
+                </Text>
+                <Ionicons name="pencil" size={10} color="#38BDF8" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setGoalWaterInput(waterTargetMl.toString());
+              setShowEditHydrationGoalModal(true);
+            }}
+            className="items-end"
+          >
+            <View className="flex-row items-baseline space-x-1">
+              <Text className="text-xl font-black text-sky-400">
+                {(currentWaterMl / 1000).toFixed(2)}
+              </Text>
+              <Text className="text-xs font-bold text-zinc-400">
+                / {(waterTargetMl / 1000).toFixed(1)} L
+              </Text>
+            </View>
+            <Text className="text-[10px] font-semibold text-zinc-500">
+              {currentWaterMl} ml {isImperial ? `(${Math.round(currentWaterMl / 29.5735)} oz)` : ''} • {waterPercent}%
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Hydration Progress Bar */}
+        <View className="w-full h-2.5 bg-zinc-900 border border-zinc-800 rounded-full overflow-hidden mb-3.5">
+          <View
+            className="h-full bg-sky-400 rounded-full"
+            style={{ width: `${Math.min(100, waterPercent)}%` }}
+          />
+        </View>
+
+        {/* Quick Add Buttons & Reset */}
+        <View className="flex-row items-center space-x-2">
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => handleAddWater(250)}
+            className="flex-1 bg-zinc-900/90 border border-zinc-800 hover:border-sky-500/50 py-2 rounded-xl items-center justify-center"
+          >
+            <Text className="text-xs font-bold text-sky-300">+250 ml</Text>
+            <Text className="text-[9px] text-zinc-500 font-medium">{isImperial ? '8 oz' : 'Glass'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => handleAddWater(500)}
+            className="flex-1 bg-zinc-900/90 border border-zinc-800 hover:border-sky-500/50 py-2 rounded-xl items-center justify-center"
+          >
+            <Text className="text-xs font-bold text-sky-300">+500 ml</Text>
+            <Text className="text-[9px] text-zinc-500 font-medium">{isImperial ? '17 oz' : 'Bottle'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.7}
+            onPress={() => handleAddWater(750)}
+            className="flex-1 bg-zinc-900/90 border border-zinc-800 hover:border-sky-500/50 py-2 rounded-xl items-center justify-center"
+          >
+            <Text className="text-xs font-bold text-sky-300">+750 ml</Text>
+            <Text className="text-[9px] text-zinc-500 font-medium">{isImperial ? '25 oz' : 'Shaker'}</Text>
+          </TouchableOpacity>
+
+          {currentWaterMl > 0 && (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={handleResetWater}
+              className="px-3 py-2 bg-zinc-900/90 border border-zinc-800 hover:border-red-500/50 rounded-xl items-center justify-center"
+            >
+              <Ionicons name="refresh-outline" size={16} color="#EF4444" />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Exact ML Option Directly Under 250ml, 500ml, 750ml Options */}
+        <View className="mt-3 pt-3 border-t border-zinc-800/80">
+          <View className="flex-row items-center space-x-2">
+            <View className="flex-1 flex-row items-center bg-zinc-900/90 border border-zinc-800 rounded-xl px-3 py-1.5">
+              <Ionicons name="water-outline" size={15} color="#38BDF8" />
+              <TextInput
+                keyboardType="numeric"
+                value={customWaterInput}
+                onChangeText={setCustomWaterInput}
+                placeholder="Exact ml (e.g. 330)"
+                placeholderTextColor="#71717A"
+                className="flex-1 text-white font-bold text-xs ml-2 py-1"
+                onSubmitEditing={() => handleLogExactWater()}
+              />
+              <Text className="text-[10px] text-zinc-500 font-semibold">ml</Text>
+            </View>
+
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => handleLogExactWater()}
+              className="bg-sky-500/20 border border-sky-400/50 px-3.5 py-2.5 rounded-xl flex-row items-center space-x-1"
+            >
+              <Ionicons name="add" size={14} color="#38BDF8" />
+              <Text className="text-xs font-bold text-sky-300">Add ml</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Quick Exact Size Chips */}
+          <View className="flex-row items-center space-x-2 mt-2">
+            <TouchableOpacity
+              onPress={() => handleLogExactWater(150)}
+              className="bg-zinc-900 border border-zinc-800/80 px-2.5 py-1 rounded-lg"
+            >
+              <Text className="text-[10px] text-zinc-400 font-medium">+150 ml (Cup)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => handleLogExactWater(330)}
+              className="bg-zinc-900 border border-zinc-800/80 px-2.5 py-1 rounded-lg"
+            >
+              <Text className="text-[10px] text-zinc-400 font-medium">+330 ml (Can)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => handleLogExactWater(1000)}
+              className="bg-zinc-900 border border-zinc-800/80 px-2.5 py-1 rounded-lg"
+            >
+              <Text className="text-[10px] text-zinc-400 font-medium">+1,000 ml (1 L)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
 
       {/* Meal Archetypes Quick-Log Carousel */}
@@ -633,9 +893,21 @@ export default function NutritionScreen() {
           <Text className="text-lg font-bold text-white">
             {selectedDate === todayStr ? "Today's Meals" : `Meals for ${selectedDate}`}
           </Text>
-          <Text className="text-xs font-semibold text-zinc-400">
-            {meals.length} Logged
-          </Text>
+          <View className="flex-row items-center space-x-2">
+            <Text className="text-xs font-semibold text-zinc-400">
+              {meals.length} Logged
+            </Text>
+            {meals.length > 0 && (
+              <TouchableOpacity
+                onPress={handleClearAllDayMeals}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                className="bg-rose-500/10 border border-rose-500/30 px-2 py-0.5 rounded flex-row items-center space-x-1"
+              >
+                <Ionicons name="trash-outline" size={11} color="#F43F5E" />
+                <Text className="text-[10px] font-bold text-rose-400">Clear All</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {meals.length === 0 ? (
@@ -649,30 +921,47 @@ export default function NutritionScreen() {
           meals.map((meal) => (
             <View
               key={meal.id}
-              className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-3 flex-row items-center justify-between"
+              className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-3"
             >
-              <View className="flex-1 pr-3">
-                <Text className="text-base font-bold text-white mb-1">{meal.label}</Text>
-                <Text className="text-xs text-zinc-400">
-                  <Text className="text-accent-emerald font-semibold">{meal.protein}g P</Text> •{' '}
-                  <Text className="text-accent-cyan font-semibold">{meal.carbs}g C</Text> •{' '}
-                  <Text className="text-amber-400 font-semibold">{meal.fats}g F</Text>
-                </Text>
+              <View className="flex-row items-center justify-between">
+                <View className="flex-1 pr-3">
+                  <Text className="text-base font-bold text-white mb-1">{meal.label}</Text>
+                  <Text className="text-xs text-zinc-400">
+                    <Text className="text-accent-emerald font-semibold">{meal.protein}g P</Text> •{' '}
+                    <Text className="text-accent-cyan font-semibold">{meal.carbs}g C</Text> •{' '}
+                    <Text className="text-amber-400 font-semibold">{meal.fats}g F</Text>
+                  </Text>
+                </View>
+
+                <View className="flex-row items-center space-x-3">
+                  <Text className="text-base font-bold text-accent-orange">{meal.calories} kcal</Text>
+                  <TouchableOpacity onPress={() => handleDelete(meal.id, meal.label)}>
+                    <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                  </TouchableOpacity>
+                </View>
               </View>
 
-              <View className="flex-row items-center space-x-3">
-                <Text className="text-base font-bold text-accent-orange">{meal.calories} kcal</Text>
-                <TouchableOpacity onPress={() => handleDelete(meal.id, meal.label)}>
-                  <Ionicons name="trash-outline" size={20} color="#EF4444" />
-                </TouchableOpacity>
-              </View>
+              {meal.recipe ? (
+                <View className="mt-2.5 pt-2.5 border-t border-zinc-800/80 flex-row items-start space-x-2 bg-zinc-900/40 p-2.5 rounded-xl">
+                  <Ionicons name="receipt-outline" size={13} color="#06B6D4" style={{ marginTop: 1 }} />
+                  <View className="flex-1">
+                    <Text className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider mb-0.5">
+                      Recipe & Ingredients
+                    </Text>
+                    <Text className="text-xs text-zinc-300 leading-relaxed font-normal">
+                      {meal.recipe}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
             </View>
           ))
         )}
       </View>
 
       {/* Fast Input Modal */}
-      <Modal visible={showAddMealModal} transparent animationType="slide">
+      {showAddMealModal && (
+        <Modal visible={showAddMealModal} transparent animationType="slide">
         <View className="flex-1 bg-black/80 justify-end">
           <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5">
             <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-3">
@@ -829,6 +1118,23 @@ export default function NutritionScreen() {
               </View>
             </View>
 
+            <View className="mb-5">
+              <View className="flex-row items-center justify-between mb-1">
+                <Text className="text-xs text-zinc-400">Recipe / Ingredients (Optional)</Text>
+                <Text className="text-[10px] text-zinc-500 italic">How it was made</Text>
+              </View>
+              <TextInput
+                value={mealRecipe}
+                onChangeText={setMealRecipe}
+                placeholder="e.g. 200g chicken breast, 150g jasmine rice, 1 tsp olive oil"
+                placeholderTextColor="#71717A"
+                multiline
+                numberOfLines={2}
+                textAlignVertical="top"
+                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-medium text-xs min-h-[60px]"
+              />
+            </View>
+
             <TouchableOpacity
               onPress={handleSaveMeal}
               className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20"
@@ -838,9 +1144,11 @@ export default function NutritionScreen() {
           </View>
         </View>
       </Modal>
+      )}
 
       {/* Edit Daily Macro Targets Modal */}
-      <Modal visible={showEditTargetsModal} transparent animationType="slide">
+      {showEditTargetsModal && (
+        <Modal visible={showEditTargetsModal} transparent animationType="slide">
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           className="flex-1 bg-black/80 justify-end"
@@ -860,14 +1168,6 @@ export default function NutritionScreen() {
               <Text className="text-xs text-zinc-400 mb-4">
                 Set custom daily nutrition goals for <Text className="text-white font-bold">{activeUser.displayName}</Text>.
               </Text>
-
-              {/* Evidence-Based Recommended Protein Targets Card (Active in Edit Mode) */}
-              <ProteinRecommendationCard
-                className="mb-4 bg-zinc-900/60 border-zinc-800"
-                onTierSelected={(tier) => {
-                  setTargetProteinInput(tier.grams.toString());
-                }}
-              />
 
               <View className="mb-4">
                 <Text className="text-xs text-accent-cyan font-semibold mb-1">Energy Target (kcal)</Text>
@@ -919,106 +1219,243 @@ export default function NutritionScreen() {
                 </View>
               </View>
 
+              {/* Daily Hydration Target */}
+              <View className="mb-6">
+                <Text className="text-xs text-sky-400 font-semibold mb-1.5">Daily Hydration Target (ml)</Text>
+                <View className="flex-row items-center bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-1 mb-2">
+                  <Ionicons name="water-outline" size={16} color="#38BDF8" />
+                  <TextInput
+                    keyboardType="numeric"
+                    value={targetWaterInput}
+                    onChangeText={setTargetWaterInput}
+                    placeholder="3000"
+                    placeholderTextColor="#71717A"
+                    className="flex-1 text-white font-bold text-base ml-2 py-2"
+                  />
+                  <Text className="text-xs text-zinc-400 font-bold">ml</Text>
+                </View>
+
+                {/* Preset Chips */}
+                <View className="flex-row flex-wrap gap-2">
+                  {[2000, 2500, 3000, 3500, 4000].map((preset) => {
+                    const isSelected = parseInt(targetWaterInput, 10) === preset;
+                    return (
+                      <TouchableOpacity
+                        key={preset}
+                        onPress={() => setTargetWaterInput(preset.toString())}
+                        className={`px-2.5 py-1.5 rounded-lg border ${
+                          isSelected
+                            ? 'bg-sky-500/20 border-sky-400'
+                            : 'bg-zinc-900 border-zinc-800'
+                        }`}
+                      >
+                        <Text
+                          className={`text-[11px] font-bold ${
+                            isSelected ? 'text-sky-400' : 'text-zinc-400'
+                          }`}
+                        >
+                          {(preset / 1000).toFixed(1)} L
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
               <TouchableOpacity
                 activeOpacity={0.85}
                 onPress={handleSaveTargets}
-                className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20"
+                className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20 mb-4"
               >
                 <Text className="text-black font-extrabold text-base">Save Targets</Text>
               </TouchableOpacity>
+
+              {/* Evidence-Based Recommended Protein Targets Card (Collapsible tip at bottom) */}
+              <View className="pt-2 border-t border-zinc-800/80">
+                <ProteinRecommendationCard
+                  collapsible
+                  defaultExpanded={false}
+                  className="bg-zinc-900/60 border-zinc-800"
+                  onTierSelected={(tier: any) => {
+                    setTargetProteinInput(tier.grams.toString());
+                  }}
+                />
+              </View>
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      )}
 
-      {/* Jump to Date / Backdate Nutrition Modal */}
-      <Modal visible={showDatePickerModal} transparent animationType="fade">
-        <View className="flex-1 bg-black/80 justify-center px-4">
-          <View className="bg-dark-card border border-zinc-800 p-5 rounded-2xl shadow-2xl">
-            <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+      {/* Set Daily Hydration Goal Modal */}
+      {showEditHydrationGoalModal && (
+        <Modal visible={showEditHydrationGoalModal} transparent animationType="slide">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          className="flex-1 bg-black/80 justify-end"
+        >
+          <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5 max-h-[85%]">
+            <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-3">
               <View className="flex-row items-center space-x-2">
-                <Ionicons name="calendar" size={20} color="#06B6D4" />
-                <Text className="text-lg font-bold text-white">Select Nutrition Date</Text>
+                <Ionicons name="water" size={20} color="#38BDF8" />
+                <Text className="text-lg font-bold text-white">Daily Hydration Goal</Text>
               </View>
-              <TouchableOpacity onPress={() => setShowDatePickerModal(false)}>
+              <TouchableOpacity onPress={() => setShowEditHydrationGoalModal(false)}>
                 <Ionicons name="close" size={24} color="#A1A1AA" />
               </TouchableOpacity>
             </View>
 
-            <Text className="text-xs text-zinc-400 mb-3">
-              View or backdate calorie and macronutrient intake for any past date:
+            <Text className="text-xs text-zinc-400 mb-4">
+              Set your target daily water intake for <Text className="text-white font-bold">{activeUser.displayName}</Text>:
             </Text>
 
-            {/* Quick Presets */}
-            <View className="flex-row flex-wrap gap-2 mb-4">
-              {[
-                { label: 'Today', date: getFormattedDate(0) },
-                { label: 'Yesterday', date: getFormattedDate(-1) },
-                { label: '2 Days Ago', date: getFormattedDate(-2) },
-                { label: '3 Days Ago', date: getFormattedDate(-3) },
-                { label: '1 Week Ago', date: getFormattedDate(-7) },
-              ].map((preset) => (
-                <TouchableOpacity
-                  key={preset.label}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setSelectedDate(preset.date);
-                    setShowDatePickerModal(false);
-                  }}
-                  className={`py-2 px-3 rounded-xl border ${
-                    selectedDate === preset.date
-                      ? 'bg-cyan-500/20 border-cyan-500'
-                      : 'bg-zinc-900 border-zinc-800'
-                  }`}
-                >
-                  <Text
-                    className={`text-xs font-bold ${
-                      selectedDate === preset.date ? 'text-cyan-400' : 'text-zinc-300'
+            {/* Custom Input */}
+            <View className="mb-4">
+              <Text className="text-xs text-sky-400 font-semibold mb-1.5">Target Intake (ml)</Text>
+              <View className="flex-row items-center bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-1">
+                <Ionicons name="water-outline" size={18} color="#38BDF8" />
+                <TextInput
+                  keyboardType="numeric"
+                  value={goalWaterInput}
+                  onChangeText={setGoalWaterInput}
+                  placeholder="3000"
+                  placeholderTextColor="#71717A"
+                  className="flex-1 text-white font-bold text-lg ml-2 py-2"
+                />
+                <Text className="text-xs text-zinc-400 font-bold">ml</Text>
+              </View>
+            </View>
+
+            {/* Preset Goal Chips */}
+            <Text className="text-xs text-zinc-400 font-medium mb-2">Quick Presets:</Text>
+            <View className="flex-row flex-wrap gap-2 mb-6">
+              {[2000, 2500, 3000, 3500, 4000].map((preset) => {
+                const isSelected = parseInt(goalWaterInput, 10) === preset;
+                return (
+                  <TouchableOpacity
+                    key={preset}
+                    onPress={() => setGoalWaterInput(preset.toString())}
+                    className={`px-3 py-2 rounded-xl border ${
+                      isSelected
+                        ? 'bg-sky-500/20 border-sky-400'
+                        : 'bg-zinc-900 border-zinc-800'
                     }`}
                   >
-                    {preset.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      className={`text-xs font-bold ${
+                        isSelected ? 'text-sky-400' : 'text-zinc-300'
+                      }`}
+                    >
+                      {(preset / 1000).toFixed(1)} L ({preset.toLocaleString()} ml)
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
-            <Text className="text-xs text-zinc-300 font-bold mb-1.5">
-              Custom Date (YYYY-MM-DD):
-            </Text>
-            <TextInput
-              value={jumpDateInput}
-              onChangeText={setJumpDateInput}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor="#71717A"
-              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-mono text-base mb-5"
-            />
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => handleSaveHydrationGoal()}
+              className="bg-sky-400 py-3.5 rounded-xl items-center shadow-md shadow-sky-500/20 mb-3"
+            >
+              <Text className="text-black font-extrabold text-base">Save Hydration Goal</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+      )}
 
-            <View className="flex-row space-x-3">
-              <TouchableOpacity
-                onPress={() => setShowDatePickerModal(false)}
-                className="flex-1 bg-zinc-800 py-3 rounded-xl items-center border border-zinc-700"
-              >
-                <Text className="text-zinc-300 font-semibold text-sm">Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => {
-                  const cleaned = jumpDateInput.trim();
-                  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
-                    Alert.alert('Invalid Format', 'Please enter date in YYYY-MM-DD format.');
-                    return;
-                  }
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  setSelectedDate(cleaned);
-                  setShowDatePickerModal(false);
-                }}
-                className="flex-1 bg-accent-cyan py-3 rounded-xl items-center shadow-md shadow-cyan-500/20"
-              >
-                <Text className="text-black font-extrabold text-sm">Jump to Date</Text>
-              </TouchableOpacity>
+      {/* Jump to Date / Backdate Nutrition Modal */}
+      {showDatePickerModal && (
+        <Modal visible={showDatePickerModal} transparent animationType="fade">
+          <View className="flex-1 bg-black/80 justify-center px-4">
+            <View className="bg-dark-card border border-zinc-800 p-5 rounded-2xl shadow-2xl">
+              <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+                <View className="flex-row items-center space-x-2">
+                  <Ionicons name="calendar" size={20} color="#06B6D4" />
+                  <Text className="text-lg font-bold text-white">Select Nutrition Date</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowDatePickerModal(false)}>
+                  <Ionicons name="close" size={24} color="#A1A1AA" />
+                </TouchableOpacity>
+              </View>
+
+              <Text className="text-xs text-zinc-400 mb-3">
+                View or backdate calorie and macronutrient intake for any past date:
+              </Text>
+
+              {/* Quick Presets */}
+              <View className="flex-row flex-wrap gap-2 mb-4">
+                {[
+                  { label: 'Today', date: getFormattedDate(0) },
+                  { label: 'Yesterday', date: getFormattedDate(-1) },
+                  { label: '2 Days Ago', date: getFormattedDate(-2) },
+                  { label: '3 Days Ago', date: getFormattedDate(-3) },
+                  { label: '1 Week Ago', date: getFormattedDate(-7) },
+                ].map((preset) => (
+                  <TouchableOpacity
+                    key={preset.label}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSelectedDate(preset.date);
+                      setShowDatePickerModal(false);
+                    }}
+                    className={`py-2 px-3 rounded-xl border ${
+                      selectedDate === preset.date
+                        ? 'bg-cyan-500/20 border-cyan-500'
+                        : 'bg-zinc-900 border-zinc-800'
+                    }`}
+                  >
+                    <Text
+                      className={`text-xs font-bold ${
+                        selectedDate === preset.date ? 'text-cyan-400' : 'text-zinc-300'
+                      }`}
+                    >
+                      {preset.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text className="text-xs text-zinc-300 font-bold mb-1.5">
+                Custom Date (YYYY-MM-DD):
+              </Text>
+              <TextInput
+                value={jumpDateInput}
+                onChangeText={setJumpDateInput}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor="#71717A"
+                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-mono text-base mb-5"
+              />
+
+              <View className="flex-row space-x-3">
+                <TouchableOpacity
+                  onPress={() => setShowDatePickerModal(false)}
+                  className="flex-1 bg-zinc-800 py-3 rounded-xl items-center border border-zinc-700"
+                >
+                  <Text className="text-zinc-300 font-semibold text-sm">Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    const cleaned = jumpDateInput.trim();
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+                      Alert.alert('Invalid Format', 'Please enter date in YYYY-MM-DD format.');
+                      return;
+                    }
+                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    setSelectedDate(cleaned);
+                    setShowDatePickerModal(false);
+                  }}
+                  className="flex-1 bg-accent-cyan py-3 rounded-xl items-center shadow-md shadow-cyan-500/20"
+                >
+                  <Text className="text-black font-extrabold text-sm">Jump to Date</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
     </ScrollView>
-  );
+  </View>
+);
 }

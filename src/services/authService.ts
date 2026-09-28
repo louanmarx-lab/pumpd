@@ -2,12 +2,15 @@ import {
   signInAnonymously as fbSignInAnonymously,
   signInWithEmailAndPassword as fbSignInWithEmail,
   createUserWithEmailAndPassword as fbCreateUserWithEmail,
+  sendPasswordResetEmail as fbSendPasswordResetEmail,
+  sendEmailVerification as fbSendEmailVerification,
+  reload as fbReload,
   signOut as fbSignOut,
   onAuthStateChanged as fbOnAuthStateChanged,
   User as FirebaseUser,
   updateProfile,
 } from 'firebase/auth';
-import { auth } from '../config/firebase';
+import { auth, firebaseConfig } from '../config/firebase';
 import {
   saveStoredAccount,
   getStoredAccounts,
@@ -16,7 +19,7 @@ import {
   getActiveSession,
   UserSession,
 } from '../utils/storage';
-import { UserRole } from '../types/trainer';
+import { UserRole, AccountType } from '../types/trainer';
 
 export interface AuthState {
   user: FirebaseUser | null;
@@ -28,10 +31,13 @@ export interface AuthState {
  * Sign in as anonymous guest.
  * Enables zero-friction local and offline access without requiring an initial login screen.
  */
-export async function signInAsGuest(role: UserRole = 'athlete'): Promise<FirebaseUser> {
+export async function signInAsGuest(
+  role: UserRole = 'athlete',
+  accountType: AccountType = 'athlete'
+): Promise<FirebaseUser> {
   const guestUid = `guest_${Date.now()}`;
-  const guestEmail = 'guest@pumpd.app';
-  const guestName = role === 'coach' ? 'Guest Coach' : 'Guest Lifter';
+  const guestEmail = 'guest@ripped.app';
+  const guestName = accountType === 'coach' || role === 'coach' ? 'Guest Coach' : 'Guest Lifter';
 
   try {
     if (auth && typeof auth === 'object' && auth.app && typeof fbSignInAnonymously === 'function') {
@@ -41,6 +47,7 @@ export async function signInAsGuest(role: UserRole = 'athlete'): Promise<Firebas
         email: cred.user.email || guestEmail,
         displayName: cred.user.displayName || guestName,
         userRole: role,
+        accountType,
       });
       return cred.user;
     }
@@ -60,6 +67,7 @@ export async function signInAsGuest(role: UserRole = 'athlete'): Promise<Firebas
     email: guestEmail,
     displayName: guestName,
     userRole: role,
+    accountType,
   });
 
   return mockGuestUser;
@@ -71,7 +79,8 @@ export async function signInAsGuest(role: UserRole = 'athlete'): Promise<Firebas
 export async function signInWithEmail(
   email: string,
   pass: string,
-  selectedRole?: UserRole
+  selectedRole?: UserRole,
+  accountType?: AccountType
 ): Promise<FirebaseUser> {
   const cleanEmail = email.trim().toLowerCase();
   const cleanPass = pass.trim();
@@ -106,11 +115,13 @@ export async function signInWithEmail(
         );
         if (localMatch && localMatch.password === cleanPass) {
           const resolvedRole = localMatch.userRole || selectedRole || 'athlete';
+          const resolvedAccountType = localMatch.accountType || accountType || (resolvedRole === 'coach' ? 'coach' : 'athlete');
           await setActiveSession({
             uid: localMatch.id,
             email: localMatch.email,
             displayName: localMatch.displayName,
             userRole: resolvedRole,
+            accountType: resolvedAccountType,
           });
           return {
             uid: localMatch.id,
@@ -134,6 +145,7 @@ export async function signInWithEmail(
   );
 
   const finalRole = match?.userRole || selectedRole || 'athlete';
+  const finalAccountType = match?.accountType || accountType || (finalRole === 'coach' ? 'coach' : 'athlete');
 
   if (fbUser) {
     const cleanName = fbUser.displayName || cleanEmail.split('@')[0];
@@ -142,6 +154,7 @@ export async function signInWithEmail(
       email: cleanEmail,
       displayName: cleanName,
       userRole: finalRole,
+      accountType: finalAccountType,
     });
     return fbUser;
   }
@@ -159,6 +172,7 @@ export async function signInWithEmail(
     email: match.email,
     displayName: match.displayName,
     userRole: finalRole,
+    accountType: finalAccountType,
   });
 
   return {
@@ -176,7 +190,8 @@ export async function registerWithEmail(
   email: string,
   pass: string,
   displayName?: string,
-  role: UserRole = 'athlete'
+  role: UserRole = 'athlete',
+  accountType: AccountType = 'athlete'
 ): Promise<FirebaseUser> {
   const cleanEmail = email.trim().toLowerCase();
   const cleanPass = pass.trim();
@@ -201,17 +216,18 @@ export async function registerWithEmail(
       const cred = await fbCreateUserWithEmail(auth, cleanEmail, cleanPass);
       if (cred && cred.user) {
         fbUser = cred.user;
-        if (cleanName) {
-          await updateProfile(fbUser, { displayName: cleanName }).catch(() => {});
+        await updateProfile(cred.user, { displayName: cleanName });
+        // Automatically send email verification link upon registration
+        try {
+          await fbSendEmailVerification(cred.user);
+        } catch (vErr) {
+          console.warn('[Auth] Initial email verification send error:', vErr);
         }
       }
     } catch (err: any) {
-      console.warn('[Auth] Firebase createUser error:', err?.code, err?.message);
+      console.warn('[Auth] Firebase createUser failed:', err?.code, err?.message);
       if (err?.code === 'auth/email-already-in-use') {
         throw new Error('An account with this email already exists. Please log in.');
-      }
-      if (err?.code === 'auth/invalid-email') {
-        throw new Error('Please enter a valid email address.');
       }
       if (err?.code === 'auth/weak-password') {
         throw new Error('Password should be at least 6 characters.');
@@ -235,6 +251,7 @@ export async function registerWithEmail(
     displayName: cleanName,
     password: cleanPass,
     userRole: role,
+    accountType,
     createdAt: Date.now(),
   });
 
@@ -243,6 +260,7 @@ export async function registerWithEmail(
     email: cleanEmail,
     displayName: cleanName,
     userRole: role,
+    accountType,
   });
 
   if (fbUser) {
@@ -351,4 +369,140 @@ export function subscribeToAuth(
     return () => {};
   }
 }
+
+/**
+ * Send password reset email via Google Firebase Identity Toolkit REST API.
+ * This directly issues the reset email with zero web reCAPTCHA or DOM dependencies,
+ * preventing 'undefined is not a function' errors on native mobile platforms.
+ */
+export async function sendPasswordReset(email: string): Promise<void> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new Error('Please enter your email address to reset your password.');
+  }
+
+  // Basic email structure validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(cleanEmail)) {
+    throw new Error('Please enter a valid email address.');
+  }
+
+  const apiKey = firebaseConfig?.apiKey;
+
+  // 1. Primary: Direct Google Firebase Identity Toolkit REST API
+  if (apiKey) {
+    try {
+      const response = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            requestType: 'PASSWORD_RESET',
+            email: cleanEmail,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const errorMsg = data?.error?.message || '';
+        console.warn('[Auth] sendPasswordReset REST API error:', errorMsg);
+
+        if (errorMsg.includes('EMAIL_NOT_FOUND')) {
+          throw new Error('No registered account was found with this email.');
+        }
+        if (errorMsg.includes('INVALID_EMAIL')) {
+          throw new Error('Please enter a valid email address.');
+        }
+        if (errorMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
+          throw new Error('Too many reset attempts. Please wait a few minutes before trying again.');
+        }
+        throw new Error('Could not send password reset email. Please try again.');
+      }
+
+      // Successfully dispatched password reset email!
+      return;
+    } catch (restErr: any) {
+      if (
+        restErr?.message &&
+        !restErr.message.includes('fetch') &&
+        !restErr.message.includes('Network') &&
+        !restErr.message.includes('undefined')
+      ) {
+        throw restErr;
+      }
+      console.warn('[Auth] REST API sendPasswordReset failed, attempting SDK fallback:', restErr);
+    }
+  }
+
+  // 2. Secondary fallback: Firebase JS SDK
+  const isFirebaseValid =
+    auth &&
+    typeof auth === 'object' &&
+    auth.app &&
+    typeof fbSendPasswordResetEmail === 'function';
+
+  if (isFirebaseValid) {
+    try {
+      await fbSendPasswordResetEmail(auth, cleanEmail);
+      return;
+    } catch (err: any) {
+      console.warn('[Auth] sendPasswordReset SDK error:', err?.code, err?.message);
+      if (err?.code === 'auth/user-not-found') {
+        throw new Error('No registered account was found with this email.');
+      }
+      if (err?.code === 'auth/invalid-email') {
+        throw new Error('Please enter a valid email address.');
+      }
+      if (err?.code === 'auth/too-many-requests') {
+        throw new Error('Too many reset attempts. Please wait a few minutes.');
+      }
+      throw new Error(err?.message || 'Failed to send password reset email. Please try again.');
+    }
+  }
+
+  throw new Error('Network error. Please check your internet connection and try again.');
+}
+
+/**
+ * Send verification email to currently signed in user or specified user
+ */
+export async function sendVerificationEmail(targetUser?: FirebaseUser | null): Promise<void> {
+  const user = targetUser || auth?.currentUser;
+  if (!user) {
+    throw new Error('No user is currently signed in.');
+  }
+
+  if (typeof fbSendEmailVerification === 'function') {
+    try {
+      await fbSendEmailVerification(user);
+    } catch (err: any) {
+      console.warn('[Auth] sendVerificationEmail error:', err?.code, err?.message);
+      if (err?.code === 'auth/too-many-requests') {
+        throw new Error('A verification email was sent recently. Please check your inbox or wait a moment.');
+      }
+      throw new Error(err?.message || 'Failed to send verification email.');
+    }
+  }
+}
+
+/**
+ * Reload current user to refresh emailVerified state
+ */
+export async function reloadCurrentUser(): Promise<FirebaseUser | null> {
+  if (auth?.currentUser && typeof fbReload === 'function') {
+    try {
+      await fbReload(auth.currentUser);
+      return auth.currentUser;
+    } catch (err) {
+      console.warn('[Auth] reloadCurrentUser error:', err);
+    }
+  }
+  return auth?.currentUser || null;
+}
+
 

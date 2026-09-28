@@ -244,6 +244,17 @@ export default function CreateSplitScreen() {
       return;
     }
 
+    if (!isEditing) {
+      const userSplitsCount = splits.filter((s) => s.userId === activeUser.id).length;
+      if (userSplitsCount >= 50) {
+        Alert.alert(
+          'Split Limit Reached (50/50)',
+          'You have reached the maximum allowed limit of 50 workout splits. Please delete an unused split before creating a new one.'
+        );
+        return;
+      }
+    }
+
     if (isEditing && existingSplit) {
       const updated: Split = {
         ...existingSplit,

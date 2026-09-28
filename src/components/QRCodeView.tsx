@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { View } from 'react-native';
-import QRCode from 'qrcode';
+// Use pure JS core encoder to prevent bundling Node.js 'fs' module in React Native
+// @ts-ignore
+const QRCodeCore = require('qrcode/lib/core/qrcode');
 
 interface QRCodeViewProps {
   value: string;
@@ -17,7 +19,7 @@ export const QRCodeView: React.FC<QRCodeViewProps> = ({
 }) => {
   const qrMatrix = useMemo(() => {
     try {
-      const qr = QRCode.create(value, { errorCorrectionLevel: 'M' });
+      const qr = QRCodeCore.create(value, { errorCorrectionLevel: 'M' });
       const numModules = qr.modules.size;
       const data = qr.modules.data;
       const matrix: boolean[][] = [];

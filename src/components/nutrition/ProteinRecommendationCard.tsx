@@ -15,13 +15,20 @@ interface ProteinRecommendationCardProps {
   className?: string;
   /** Optional callback when a tier is selected */
   onTierSelected?: (tier: ProteinTier) => void;
+  /** Whether the card can be collapsed like an accordion */
+  collapsible?: boolean;
+  /** Initial expansion state if collapsible */
+  defaultExpanded?: boolean;
 }
 
 export const ProteinRecommendationCard: React.FC<ProteinRecommendationCardProps> = ({
   className,
   onTierSelected,
+  collapsible = false,
+  defaultExpanded = true,
 }) => {
   const { activeUser, bodyMetrics, updateMacroTargets } = useUserWorkspace();
+  const [isExpanded, setIsExpanded] = useState(collapsible ? defaultExpanded : true);
 
   // 1. Reactive calculation: Extract user's latest logged body weight
   const userMetrics = useMemo(() => {
@@ -89,42 +96,77 @@ export const ProteinRecommendationCard: React.FC<ProteinRecommendationCardProps>
     onTierSelected?.(tier);
   };
 
+  const optimalGrams = recommendation.tiers.find((t) => t.id === 'optimal')?.grams ?? 150;
+
   return (
     <View
-      className={`bg-dark-card border border-dark-border p-5 rounded-2xl mb-5 shadow-md ${
-        className || ''
-      }`}
+      className={`bg-dark-card border border-dark-border rounded-2xl mb-4 shadow-md ${
+        isExpanded ? 'p-4' : 'p-3.5'
+      } ${className || ''}`}
     >
-      {/* Header with Title & Weight Indicator */}
-      <View className="flex-row items-center justify-between mb-2">
-        <View className="flex-row items-center space-x-2">
-          <View className="w-7 h-7 rounded-xl bg-emerald-500/20 items-center justify-center border border-emerald-500/40">
+      {/* Header with Title, Weight, & Optional Collapse Toggle */}
+      <TouchableOpacity
+        disabled={!collapsible}
+        activeOpacity={0.7}
+        onPress={() => {
+          if (collapsible) {
+            Haptics.selectionAsync();
+            setIsExpanded(!isExpanded);
+          }
+        }}
+        className="flex-row items-center justify-between"
+      >
+        <View className="flex-row items-center space-x-2.5 flex-1 mr-2 min-w-0">
+          <View className="w-8 h-8 rounded-xl bg-emerald-500/20 items-center justify-center border border-emerald-500/40 shrink-0">
             <Ionicons name="barbell-outline" size={15} color="#10B981" />
           </View>
-          <View>
-            <Text className="text-base font-bold text-white tracking-tight">
-              Recommended Protein Targets
+          <View className="flex-1 min-w-0">
+            <Text className="text-sm font-bold text-white tracking-tight" numberOfLines={1}>
+              {isExpanded ? 'Recommended Protein Targets' : 'Recommended Protein'}
             </Text>
-            <Text className="text-[11px] text-zinc-400 font-medium">
-              Schoenfeld & Phillips Hypertrophy Range
+            <Text className="text-[11px] text-zinc-400 font-medium" numberOfLines={1}>
+              {isExpanded
+                ? 'Schoenfeld & Phillips Hypertrophy Range'
+                : `Based on ${latestWeightKg} kg • Tap to view guide`}
             </Text>
           </View>
         </View>
 
-        {/* Current Weight Pill */}
-        <View className="bg-zinc-800/80 px-2.5 py-1 rounded-full border border-zinc-700 flex-row items-center space-x-1">
-          <Ionicons name="scale-outline" size={12} color="#10B981" />
-          <Text className="text-xs font-bold text-zinc-200">
-            {latestWeightKg} kg
-          </Text>
-        </View>
-      </View>
+        <View className="flex-row items-center space-x-1.5 shrink-0">
+          {!isExpanded ? (
+            <View className="bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/40">
+              <Text className="text-[10px] font-bold text-emerald-400">
+                {optimalGrams}g optimal
+              </Text>
+            </View>
+          ) : (
+            <View className="bg-zinc-800/80 px-2.5 py-1 rounded-full border border-zinc-700 flex-row items-center space-x-1">
+              <Ionicons name="scale-outline" size={12} color="#10B981" />
+              <Text className="text-xs font-bold text-zinc-200">
+                {latestWeightKg} kg
+              </Text>
+            </View>
+          )}
 
-      <Text className="text-xs text-zinc-400 mb-4 leading-relaxed">
-        Muscle protein synthesis (MPS) plateaus between{' '}
-        <Text className="text-zinc-200 font-semibold">1.6–2.2 g/kg</Text>.
-        Derived dynamically from your latest logged body weight:
-      </Text>
+          {collapsible && (
+            <View className="w-7 h-7 rounded-full bg-zinc-800 items-center justify-center border border-zinc-700">
+              <Ionicons
+                name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                size={14}
+                color="#A1A1AA"
+              />
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+
+      {isExpanded && (
+        <>
+          <Text className="text-xs text-zinc-400 mt-3 mb-3 leading-relaxed">
+            Muscle protein synthesis (MPS) plateaus between{' '}
+            <Text className="text-zinc-200 font-semibold">1.6–2.2 g/kg</Text>.
+            Derived dynamically from your latest logged body weight:
+          </Text>
 
       {/* Selectable Tier Cards */}
       <View className="space-y-2.5">
@@ -233,6 +275,8 @@ export const ProteinRecommendationCard: React.FC<ProteinRecommendationCardProps>
           {activeProteinTarget}g Protein / day
         </Text>
       </View>
+        </>
+      )}
     </View>
   );
 };

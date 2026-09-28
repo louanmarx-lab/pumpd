@@ -76,7 +76,7 @@ export const DataBackupRestoreModal: React.FC<DataBackupRestoreModalProps> = ({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       await Share.share({
-        title: `Pumpd Backup - ${activeUser.displayName}`,
+        title: `RIPPED Backup - ${activeUser.displayName}`,
         message: backupPayload,
       });
     } catch (err) {

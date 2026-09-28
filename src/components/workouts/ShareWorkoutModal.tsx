@@ -40,14 +40,14 @@ export const ShareWorkoutModal: React.FC<ShareWorkoutModalProps> = ({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     const shareTypeLabel = type === 'split' ? 'Workout Split' : 'Workout Routine';
-    const message = `🏋️ Check out my ${shareTypeLabel} on Pumpd!\n\n"${title}"\n${
+    const message = `🏋️ Check out my ${shareTypeLabel} on RIPPED!\n\n"${title}"\n${
       type === 'split' ? `• ${routinesCount} Routines\n` : ''
-    }• ${exercisesCount} Exercises\n\nTo copy this workout to your phone, open Pumpd, go to Workouts > Import Split, and enter code:\n👉 ${shareCode}`;
+    }• ${exercisesCount} Exercises\n\nTo copy this workout to your phone, open RIPPED, go to Workouts > Import Split, and enter code:\n👉 ${shareCode}`;
 
     try {
       await Share.share({
         message,
-        title: `Pumpd ${shareTypeLabel} - ${title}`,
+        title: `RIPPED ${shareTypeLabel} - ${title}`,
       });
     } catch (err) {
       console.warn('Native share failed:', err);
@@ -161,7 +161,7 @@ export const ShareWorkoutModal: React.FC<ShareWorkoutModalProps> = ({
                 </TouchableOpacity>
 
                 <Text className="text-[11px] text-zinc-500 text-center mt-1 px-4 leading-relaxed">
-                  💡 Your friend can import this workout instantly in Pumpd by going to{' '}
+                  💡 Your friend can import this workout instantly in RIPPED by going to{' '}
                   <Text className="text-zinc-300 font-bold">Workouts &gt; Import Split</Text>.
                 </Text>
               </>

@@ -1,3 +1,4 @@
+import 'react-native-get-random-values';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 // @ts-ignore
 import { initializeAuth, getReactNativePersistence, getAuth } from 'firebase/auth';
@@ -54,7 +55,13 @@ try {
 }
 export const db = dbInstance;
 
-// Initialize Cloud Storage
-export const storage = getStorage(app);
+// Initialize Cloud Storage safely
+let storageInstance: any = null;
+try {
+  storageInstance = getStorage(app);
+} catch (err) {
+  console.warn('[Firebase] Storage fallback:', err);
+}
+export const storage = storageInstance;
 
 export default { app, auth, db, storage };

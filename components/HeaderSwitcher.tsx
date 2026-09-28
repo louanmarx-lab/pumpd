@@ -4,6 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
+import { TIER_CONFIGS, TrainerSubscriptionTier } from '../src/types/trainer';
+import { SeatUpgradeModal } from '../src/components/coach/SeatUpgradeModal';
+import { DowngradeReconcileModal } from '../src/components/coach/DowngradeReconcileModal';
 
 export const HeaderSwitcher: React.FC = () => {
   const router = useRouter();
@@ -11,10 +14,29 @@ export const HeaderSwitcher: React.FC = () => {
     activeUser,
     userRole,
     setUserRole,
+    setAccountType,
     updateUserName,
     firebaseUser,
+    coachProfile,
+    trainerSubscription,
+    activeSeatsUsed,
+    linkedCoach,
+    clients,
+    upgradeTrainerSubscription,
+    reconcileDowngradeSeats,
+    managedClient,
+    stopManagingClient,
+    isCoachAccount,
+    isViewingPersonalProfile,
+    enterPersonalAthleteMode,
+    exitPersonalAthleteMode,
   } = useUserWorkspace();
   const [modalVisible, setModalVisible] = useState(false);
+
+  // Seat Monetization Modals
+  const [showSeatUpgradeModal, setShowSeatUpgradeModal] = useState(false);
+  const [showDowngradeModal, setShowDowngradeModal] = useState(false);
+  const [downgradeTargetTier, setDowngradeTargetTier] = useState<TrainerSubscriptionTier | null>(null);
 
   // Edit Name Sub-modal state
   const [isEditingName, setIsEditingName] = useState(false);
@@ -35,6 +57,12 @@ export const HeaderSwitcher: React.FC = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setIsEditingName(false);
   };
+
+  // Hide HeaderSwitcher when in managed client mode or personal workout profile mode
+  // to avoid header crowding and allow the back button + title full space.
+  if (managedClient || isViewingPersonalProfile) {
+    return null;
+  }
 
   const displayName = activeUser.displayName || (firebaseUser?.email ? firebaseUser.email.split('@')[0] : 'Lifter');
   const firstName = displayName.split(' ')[0];
@@ -94,54 +122,131 @@ export const HeaderSwitcher: React.FC = () => {
             <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-3">
               <View className="flex-row items-center space-x-2">
                 <Ionicons name="person-circle-outline" size={22} color="#06B6D4" />
-                <Text className="text-lg font-bold text-white">Profile & Mode</Text>
+                <Text className="text-lg font-bold text-white">Profile & Account</Text>
               </View>
               <TouchableOpacity onPress={() => setModalVisible(false)}>
                 <Ionicons name="close-circle" size={24} color="#71717A" />
               </TouchableOpacity>
             </View>
 
-            {/* Role Switcher Mode Bar */}
-            <Text className="text-xs text-zinc-400 font-semibold mb-2 uppercase tracking-wider">
-              Experience Mode:
-            </Text>
-            <View className="bg-zinc-900 border border-zinc-800 rounded-xl p-1 flex-row mb-4">
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  setUserRole('athlete');
-                }}
-                className={`flex-1 py-2 rounded-lg items-center ${
-                  userRole === 'athlete' ? 'bg-cyan-500' : 'bg-transparent'
-                }`}
-              >
-                <Text
-                  className={`text-xs font-black ${
-                    userRole === 'athlete' ? 'text-black' : 'text-zinc-400'
-                  }`}
-                >
-                  🏃 Athlete Mode
-                </Text>
-              </TouchableOpacity>
+            {/* Subscription & Account Tier Section */}
+            {isCoachAccount ? (
+              /* Coach Account View (Always shows Coach Plan whether in Hub or Personal Profile) */
+              <View className="mb-4">
+                <View className="bg-amber-500/10 border border-amber-500/30 p-3 rounded-xl mb-2.5">
+                  <View className="flex-row items-center justify-between mb-1">
+                    <View className="flex-row items-center space-x-1.5">
+                      <Ionicons name="ribbon" size={15} color="#F59E0B" />
+                      <Text className="text-xs font-bold text-white">Coach Subscription</Text>
+                    </View>
+                    <View className="bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/40">
+                      <Text className="text-[10px] font-extrabold text-amber-400 uppercase tracking-wider">
+                        {TIER_CONFIGS[trainerSubscription.tier]?.name || 'Starter Tier'} (R{trainerSubscription.priceZar}/mo)
+                      </Text>
+                    </View>
+                  </View>
+                  <Text className="text-[11px] text-zinc-400 leading-snug">
+                    {activeSeatsUsed} of {trainerSubscription.seatLimit} active client seats occupied. Personal workouts included free.
+                  </Text>
+                </View>
 
-              <TouchableOpacity
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  setUserRole('coach');
-                }}
-                className={`flex-1 py-2 rounded-lg items-center ${
-                  userRole === 'coach' ? 'bg-amber-400' : 'bg-transparent'
-                }`}
-              >
-                <Text
-                  className={`text-xs font-black ${
-                    userRole === 'coach' ? 'text-black' : 'text-zinc-400'
-                  }`}
+                {/* Coach Quick Actions: Manage Seats & Toggle Hub/Profile */}
+                <View className="flex-row space-x-2">
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      setModalVisible(false);
+                      setShowSeatUpgradeModal(true);
+                    }}
+                    className="flex-1 bg-amber-400 py-2 rounded-xl items-center flex-row justify-center space-x-1 shadow-sm"
+                  >
+                    <Ionicons name="trending-up" size={13} color="#09090B" />
+                    <Text className="text-[11px] font-black text-black">Manage Seats</Text>
+                  </TouchableOpacity>
+
+                  {userRole === 'coach' ? (
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        setModalVisible(false);
+                        enterPersonalAthleteMode();
+                        router.push('/(tabs)/workouts');
+                      }}
+                      className="flex-1 bg-zinc-850 border border-zinc-700 py-2 rounded-xl items-center flex-row justify-center space-x-1"
+                    >
+                      <Ionicons name="barbell-outline" size={13} color="#06B6D4" />
+                      <Text className="text-[11px] font-bold text-zinc-200">Open My Profile</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        setModalVisible(false);
+                        exitPersonalAthleteMode();
+                        router.replace('/(tabs)/clients' as any);
+                      }}
+                      className="flex-1 bg-zinc-850 border border-zinc-700 py-2 rounded-xl items-center flex-row justify-center space-x-1"
+                    >
+                      <Ionicons name="briefcase-outline" size={13} color="#F59E0B" />
+                      <Text className="text-[11px] font-bold text-amber-400">Coach Hub</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ) : (
+              /* Regular Athlete View (Not a coach account) */
+              <View className="mb-4">
+                {/* Active Athlete Plan Card */}
+                <View className="bg-zinc-900/90 border border-zinc-800 p-3 rounded-xl mb-2.5">
+                  <View className="flex-row items-center justify-between mb-1">
+                    <View className="flex-row items-center space-x-1.5">
+                      <Ionicons name="shield-checkmark" size={15} color={linkedCoach ? '#10B981' : '#06B6D4'} />
+                      <Text className="text-xs font-bold text-white">Active Subscription</Text>
+                    </View>
+                    <View className={`px-2 py-0.5 rounded border ${linkedCoach ? 'bg-emerald-500/20 border-emerald-500/40' : 'bg-cyan-500/20 border-cyan-500/40'}`}>
+                      <Text className={`text-[10px] font-extrabold uppercase tracking-wider ${linkedCoach ? 'text-emerald-400' : 'text-cyan-400'}`}>
+                        {linkedCoach ? 'Sponsored (Free)' : 'Athlete (R59/mo)'}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text className="text-[11px] text-zinc-400 leading-snug">
+                    {linkedCoach
+                      ? `Sponsored by coach ${linkedCoach.name}. Full personal tracking with zero fees.`
+                      : 'Full personal tracking: custom splits, macro targets, and benchmark progression.'}
+                  </Text>
+                </View>
+
+                {/* View Plans Button for Athletes */}
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    setModalVisible(false);
+                    setShowSeatUpgradeModal(true);
+                  }}
+                  className="bg-cyan-500/15 border border-cyan-500/40 py-2 rounded-xl items-center flex-row justify-center space-x-1.5 mb-2.5"
                 >
-                  🏋️ Coach CRM
-                </Text>
-              </TouchableOpacity>
-            </View>
+                  <Ionicons name="layers-outline" size={13} color="#06B6D4" />
+                  <Text className="text-[11px] font-bold text-cyan-300">View All Plans & Tiers</Text>
+                </TouchableOpacity>
+
+                {/* Account Status Info */}
+                <View className="bg-zinc-900/60 border border-zinc-800/80 p-3 rounded-xl flex-row items-center space-x-2.5">
+                  <View className="w-8 h-8 rounded-lg bg-zinc-800 items-center justify-center">
+                    <Ionicons name="shield-checkmark" size={15} color={linkedCoach ? '#10B981' : '#06B6D4'} />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-xs font-bold text-zinc-200">
+                      {linkedCoach ? 'VIP Client Account' : 'Individual Lifter Account'}
+                    </Text>
+                    <Text className="text-[10px] text-zinc-400">
+                      {linkedCoach ? 'Linked to your Coach. Coach Plan handles your billing.' : 'Personal workout & macro tracker.'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            )}
 
             {/* Authenticated User Profile Card */}
             <View className="bg-zinc-900 border border-zinc-800 p-4 rounded-xl mb-4">
@@ -240,6 +345,47 @@ export const HeaderSwitcher: React.FC = () => {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Seat Upgrade & Monetization Modal */}
+      <SeatUpgradeModal
+        visible={showSeatUpgradeModal}
+        currentSubscription={trainerSubscription}
+        activeSeatsUsed={activeSeatsUsed}
+        isCurrentlyAthlete={!isCoachAccount}
+        onClose={() => setShowSeatUpgradeModal(false)}
+        onUpgradeSuccess={(tier, customSeats) => {
+          if (!isCoachAccount) {
+            setAccountType('coach');
+          }
+          upgradeTrainerSubscription(tier, customSeats);
+        }}
+        onRequireDowngradeReconcile={(tier) => {
+          setDowngradeTargetTier(tier);
+          setShowDowngradeModal(true);
+        }}
+        onSwitchToAthlete={() => {
+          setAccountType('athlete');
+          router.replace('/(tabs)/workouts');
+        }}
+      />
+
+      {/* Downgrade Reconcile Active Clients Modal */}
+      {downgradeTargetTier && (
+        <DowngradeReconcileModal
+          visible={showDowngradeModal}
+          targetTier={downgradeTargetTier}
+          activeClients={clients.filter((c) => c.status !== 'archived')}
+          onClose={() => {
+            setShowDowngradeModal(false);
+            setDowngradeTargetTier(null);
+          }}
+          onConfirmReconcile={(newTier: TrainerSubscriptionTier, activeIds: string[]) => {
+            reconcileDowngradeSeats(newTier, activeIds);
+            setShowDowngradeModal(false);
+            setDowngradeTargetTier(null);
+          }}
+        />
+      )}
     </View>
   );
 };

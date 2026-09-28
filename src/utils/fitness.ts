@@ -198,26 +198,78 @@ export function calculateWeeklyVolume(
  * Default Seed Exercises covering all 9 Muscle Groups
  */
 export const DEFAULT_EXERCISES: Exercise[] = [
+  // Chest
   { id: 'ex_1', workspaceId: null, name: 'Barbell Flat Bench Press', muscleGroup: 'Chest', equipment: 'Barbell' },
   { id: 'ex_2', workspaceId: null, name: 'Incline Dumbbell Press', muscleGroup: 'Chest', equipment: 'Dumbbell' },
   { id: 'ex_3', workspaceId: null, name: 'Cable Chest Flyes', muscleGroup: 'Chest', equipment: 'Cable' },
+  { id: 'ex_28', workspaceId: null, name: 'Cable Crossover', muscleGroup: 'Chest', equipment: 'Cable' },
+  { id: 'ex_33', workspaceId: null, name: 'Incline Barbell Bench Press', muscleGroup: 'Chest', equipment: 'Barbell' },
+  { id: 'ex_34', workspaceId: null, name: 'Flat Dumbbell Press', muscleGroup: 'Chest', equipment: 'Dumbbell' },
+  { id: 'ex_35', workspaceId: null, name: 'Chest-Supported Machine Press', muscleGroup: 'Chest', equipment: 'Machine' },
+  { id: 'ex_36', workspaceId: null, name: 'Bodyweight Dips', muscleGroup: 'Chest', equipment: 'Bodyweight' },
+
+  // Back
   { id: 'ex_4', workspaceId: null, name: 'Barbell Conventional Deadlift', muscleGroup: 'Back', equipment: 'Barbell' },
   { id: 'ex_5', workspaceId: null, name: 'Lat Pulldown', muscleGroup: 'Back', equipment: 'Cable' },
   { id: 'ex_6', workspaceId: null, name: 'Seated Cable Row', muscleGroup: 'Back', equipment: 'Cable' },
   { id: 'ex_7', workspaceId: null, name: 'Pull-ups', muscleGroup: 'Back', equipment: 'Bodyweight' },
+  { id: 'ex_32', workspaceId: null, name: 'Cable Rear Delt Crossovers', muscleGroup: 'Back', equipment: 'Cable' },
+  { id: 'ex_37', workspaceId: null, name: 'Barbell Bent-Over Row', muscleGroup: 'Back', equipment: 'Barbell' },
+  { id: 'ex_38', workspaceId: null, name: 'Chest-Supported T-Bar Row', muscleGroup: 'Back', equipment: 'Machine' },
+  { id: 'ex_39', workspaceId: null, name: 'Single-Arm Dumbbell Row', muscleGroup: 'Back', equipment: 'Dumbbell' },
+  { id: 'ex_40', workspaceId: null, name: 'Neutral-Grip Lat Pulldown', muscleGroup: 'Back', equipment: 'Cable' },
+  { id: 'ex_41', workspaceId: null, name: 'Straight-Arm Lat Pulldown (Cable Pullover)', muscleGroup: 'Back', equipment: 'Cable' },
+
+  // Quads
   { id: 'ex_8', workspaceId: null, name: 'Barbell Back Squat', muscleGroup: 'Quads', equipment: 'Barbell' },
   { id: 'ex_9', workspaceId: null, name: 'Leg Press', muscleGroup: 'Quads', equipment: 'Machine' },
   { id: 'ex_10', workspaceId: null, name: 'Leg Extensions', muscleGroup: 'Quads', equipment: 'Machine' },
+  { id: 'ex_29', workspaceId: null, name: 'Machine Squat', muscleGroup: 'Quads', equipment: 'Machine' },
+  { id: 'ex_51', workspaceId: null, name: 'Bulgarian Split Squat', muscleGroup: 'Quads', equipment: 'Dumbbell' },
+  { id: 'ex_52', workspaceId: null, name: 'Goblet Squat', muscleGroup: 'Quads', equipment: 'Dumbbell' },
+
+  // Hamstrings & Glutes
   { id: 'ex_11', workspaceId: null, name: 'Romanian Deadlift (RDL)', muscleGroup: 'Hamstrings', equipment: 'Barbell' },
   { id: 'ex_12', workspaceId: null, name: 'Lying Leg Curl', muscleGroup: 'Hamstrings', equipment: 'Machine' },
+  { id: 'ex_53', workspaceId: null, name: 'Seated Leg Curl', muscleGroup: 'Hamstrings', equipment: 'Machine' },
+  { id: 'ex_54', workspaceId: null, name: 'Dumbbell Romanian Deadlift', muscleGroup: 'Hamstrings', equipment: 'Dumbbell' },
+  { id: 'ex_55', workspaceId: null, name: 'Barbell Hip Thrust', muscleGroup: 'Hamstrings', equipment: 'Barbell' },
+
+  // Shoulders
   { id: 'ex_13', workspaceId: null, name: 'Dumbbell Overhead Shoulder Press', muscleGroup: 'Shoulders', equipment: 'Dumbbell' },
   { id: 'ex_14', workspaceId: null, name: 'Lateral Raises', muscleGroup: 'Shoulders', equipment: 'Dumbbell' },
   { id: 'ex_15', workspaceId: null, name: 'Face Pulls', muscleGroup: 'Shoulders', equipment: 'Cable' },
+  { id: 'ex_30', workspaceId: null, name: 'Machine Side Raise', muscleGroup: 'Shoulders', equipment: 'Machine' },
+  { id: 'ex_31', workspaceId: null, name: 'Machine Shoulder Press', muscleGroup: 'Shoulders', equipment: 'Machine' },
+  { id: 'ex_42', workspaceId: null, name: 'Barbell Overhead Press (OHP)', muscleGroup: 'Shoulders', equipment: 'Barbell' },
+  { id: 'ex_43', workspaceId: null, name: 'Cable Lateral Raise', muscleGroup: 'Shoulders', equipment: 'Cable' },
+  { id: 'ex_44', workspaceId: null, name: 'Reverse Pec Deck (Rear Delt Fly)', muscleGroup: 'Shoulders', equipment: 'Machine' },
+
+  // Biceps
   { id: 'ex_16', workspaceId: null, name: 'Barbell Standing Bicep Curl', muscleGroup: 'Biceps', equipment: 'Barbell' },
   { id: 'ex_17', workspaceId: null, name: 'Dumbbell Hammer Curls', muscleGroup: 'Biceps', equipment: 'Dumbbell' },
+  { id: 'ex_23', workspaceId: null, name: 'Preacher Curl', muscleGroup: 'Biceps', equipment: 'Dumbbell' },
+  { id: 'ex_24', workspaceId: null, name: 'Hammer Preacher Curl', muscleGroup: 'Biceps', equipment: 'Dumbbell' },
+  { id: 'ex_25', workspaceId: null, name: 'Barbell Hammer Curl', muscleGroup: 'Biceps', equipment: 'Barbell' },
+  { id: 'ex_45', workspaceId: null, name: 'Incline Dumbbell Bicep Curl', muscleGroup: 'Biceps', equipment: 'Dumbbell' },
+  { id: 'ex_46', workspaceId: null, name: 'Cable Bicep Curl', muscleGroup: 'Biceps', equipment: 'Cable' },
+  { id: 'ex_47', workspaceId: null, name: 'EZ-Bar Preacher Curl', muscleGroup: 'Biceps', equipment: 'Barbell' },
+
+  // Triceps
   { id: 'ex_18', workspaceId: null, name: 'Tricep Rope Pushdown', muscleGroup: 'Triceps', equipment: 'Cable' },
   { id: 'ex_19', workspaceId: null, name: 'EZ-Bar Skull Crushers', muscleGroup: 'Triceps', equipment: 'Barbell' },
+  { id: 'ex_26', workspaceId: null, name: 'Cable Push Downs', muscleGroup: 'Triceps', equipment: 'Cable' },
+  { id: 'ex_27', workspaceId: null, name: 'Machine Dips', muscleGroup: 'Triceps', equipment: 'Machine' },
+  { id: 'ex_48', workspaceId: null, name: 'Overhead Cable Tricep Extension', muscleGroup: 'Triceps', equipment: 'Cable' },
+  { id: 'ex_49', workspaceId: null, name: 'Dumbbell Overhead Tricep Extension', muscleGroup: 'Triceps', equipment: 'Dumbbell' },
+  { id: 'ex_50', workspaceId: null, name: 'Close-Grip Barbell Bench Press', muscleGroup: 'Triceps', equipment: 'Barbell' },
+
+  // Calves
   { id: 'ex_20', workspaceId: null, name: 'Standing Calf Raise', muscleGroup: 'Calves', equipment: 'Machine' },
+  { id: 'ex_56', workspaceId: null, name: 'Seated Calf Raise', muscleGroup: 'Calves', equipment: 'Machine' },
+
+  // Abs
   { id: 'ex_21', workspaceId: null, name: 'Hanging Leg Raise', muscleGroup: 'Abs', equipment: 'Bodyweight' },
   { id: 'ex_22', workspaceId: null, name: 'Cable Kneeling Crunch', muscleGroup: 'Abs', equipment: 'Cable' },
+  { id: 'ex_57', workspaceId: null, name: 'Cable Woodchoppers', muscleGroup: 'Abs', equipment: 'Cable' },
 ];

@@ -23,10 +23,20 @@ export interface LogSetMessage {
   timestamp: number;
 }
 
+export interface SessionExerciseTemplate {
+  exerciseId: string;
+  exerciseName: string;
+  sets: {
+    setNumber: number;
+    type: 'Warmup' | 'Normal' | 'Drop' | 'Failure';
+  }[];
+}
+
 export interface SyncSessionMessage {
   type: 'SYNC_SESSION';
   routineName: string;
   exerciseIds: string[];
+  sessionExercises?: SessionExerciseTemplate[];
   hostUserId: string;
   hostUserName: string;
   hostRole?: UserRole;
@@ -91,6 +101,51 @@ export interface PongMessage {
   timestamp: number;
 }
 
+export interface SyncBenchmarksMessage {
+  type: 'SYNC_BENCHMARKS';
+  userId: string;
+  userName: string;
+  benchmarks: Record<string, any>;
+  timestamp: number;
+}
+
+export interface UpdateLifterSetMessage {
+  type: 'UPDATE_LIFTER_SET';
+  targetUserId: string;
+  exerciseIndex: number;
+  setIndex: number;
+  field: string;
+  value: any;
+  updatedByUserId: string;
+  updatedByUserName: string;
+  timestamp: number;
+}
+
+export interface AddLifterSetMessage {
+  type: 'ADD_LIFTER_SET';
+  targetUserId: string;
+  exerciseIndex: number;
+  newSet: any;
+  addedByUserId: string;
+  timestamp: number;
+}
+
+export interface RemoveLifterSetMessage {
+  type: 'REMOVE_LIFTER_SET';
+  targetUserId: string;
+  exerciseIndex: number;
+  setIndex: number;
+  removedByUserId: string;
+  timestamp: number;
+}
+
+export interface FinishWorkoutMessage {
+  type: 'FINISH_WORKOUT';
+  finishedByUserId: string;
+  finishedByUserName: string;
+  timestamp: number;
+}
+
 export type JamMessage =
   | SyncSessionMessage
   | LogSetMessage
@@ -102,6 +157,11 @@ export type JamMessage =
   | SyncPresetsMessage
   | AdvanceExerciseMessage
   | TurnSetMessage
+  | SyncBenchmarksMessage
+  | UpdateLifterSetMessage
+  | AddLifterSetMessage
+  | RemoveLifterSetMessage
+  | FinishWorkoutMessage
   | PingMessage
   | PongMessage;
 
@@ -126,6 +186,7 @@ export interface MealArchetype {
   isCustom?: boolean;
   prescribedBy?: string;
   instructions?: string;
+  recipe?: string;
 }
 
 // -------------------------------------------------------------
@@ -134,6 +195,7 @@ export interface MealArchetype {
 export interface WorkoutReceiptData {
   id: string;
   date: string;
+  athleteName?: string;
   routineName: string;
   durationSeconds: number;
   totalVolumeKg: number;

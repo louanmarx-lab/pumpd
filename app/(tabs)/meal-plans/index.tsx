@@ -14,7 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 
 import { useUserWorkspace } from '../../../src/context/UserWorkspaceContext';
-import { PrescribedMealArchetype } from '../../../src/types/trainer';
+import { PrescribedMealArchetype, ClientProfile } from '../../../src/types/trainer';
 
 const MEAL_EMOJIS = ['🍗', '🥩', '🍳', '🥤', '🥑', '🥣', '🥗', '🐟', '🥞', '🥪'];
 
@@ -23,10 +23,27 @@ export default function MealPlansScreen() {
   const {
     coachProfile,
     clients,
-    prescribedArchetypes,
-    setPrescribedArchetypes,
+    coachMeals,
+    addCoachMeal,
+    deleteCoachMeal,
     updateClient,
+    assignClientArchetypes,
+    assignClientMacros,
+    assignMealToSelf,
+    enterPersonalAthleteMode,
+    currentUser,
+    updateMacroTargets,
+    startManagingClient,
+    userRole,
+    managedClient,
+    isViewingPersonalProfile,
   } = useUserWorkspace();
+
+  React.useEffect(() => {
+    if (userRole === 'athlete' && !managedClient && !isViewingPersonalProfile) {
+      router.replace('/(tabs)/workouts');
+    }
+  }, [userRole, managedClient, isViewingPersonalProfile]);
 
   // Create Archetype Modal
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -57,8 +74,7 @@ export default function MealPlansScreen() {
       return;
     }
 
-    const newArchetype: PrescribedMealArchetype = {
-      id: `arch_${Date.now()}`,
+    addCoachMeal({
       name: name.trim(),
       emoji,
       calories: parseInt(calories, 10) || 400,
@@ -67,9 +83,8 @@ export default function MealPlansScreen() {
       fats: parseInt(fats, 10) || 10,
       prescribedBy: coachProfile.businessName || coachProfile.name,
       instructions: instructions.trim() || undefined,
-    };
+    });
 
-    setPrescribedArchetypes((prev) => [...prev, newArchetype]);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     setName('');
@@ -88,11 +103,36 @@ export default function MealPlansScreen() {
         text: 'Remove',
         style: 'destructive',
         onPress: () => {
-          setPrescribedArchetypes((prev) => prev.filter((a) => a.id !== archId));
+          deleteCoachMeal(archId);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         },
       },
     ]);
+  };
+
+  const handleAssignArchetypeToSelf = () => {
+    if (!selectedArchetypeToAssign) return;
+
+    assignMealToSelf(selectedArchetypeToAssign);
+
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert(
+      '✅ Added to Your Meals!',
+      `"${selectedArchetypeToAssign.name}" has been added to your personal athlete profile. You can log it anytime in your Nutrition tab.`,
+      [
+        {
+          text: 'View in My Nutrition →',
+          onPress: () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            enterPersonalAthleteMode();
+            router.push('/(tabs)/nutrition');
+          },
+        },
+        { text: 'Done', style: 'cancel' },
+      ]
+    );
+    setShowAssignModal(false);
+    setSelectedArchetypeToAssign(null);
   };
 
   const handleAssignArchetype = (clientId: string) => {
@@ -108,15 +148,29 @@ export default function MealPlansScreen() {
       ? client.prescribedArchetypes
       : [...client.prescribedArchetypes, selectedArchetypeToAssign];
 
-    updateClient({
+    const updatedClient: ClientProfile = {
       ...client,
       prescribedArchetypes: updatedArchetypes,
-    });
+    };
+
+    // Push directly to client's Firestore profile & coach roster
+    assignClientArchetypes(clientId, updatedArchetypes);
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert(
-      'Meal Prescribed! 🥗',
-      `Prescribed "${selectedArchetypeToAssign.name}" to ${client.name}'s diet plan.`
+      '✅ Meal Prescribed!',
+      `"${selectedArchetypeToAssign.name}" has been added to ${client.name}'s Nutrition profile. They can see it immediately in the app.`,
+      [
+        {
+          text: 'View in Profile →',
+          onPress: () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            startManagingClient(updatedClient);
+            router.push('/(tabs)/nutrition');
+          },
+        },
+        { text: 'Done', style: 'cancel' },
+      ]
     );
     setShowAssignModal(false);
     setSelectedArchetypeToAssign(null);
@@ -124,18 +178,28 @@ export default function MealPlansScreen() {
 
   const handleSaveClientMacros = () => {
     if (!selectedClientIdForMacros) return;
+
+    const newTargets = {
+      calories: parseInt(targetCalories, 10) || 2400,
+      protein: parseInt(targetProtein, 10) || 160,
+      carbs: parseInt(targetCarbs, 10) || 240,
+      fats: parseInt(targetFats, 10) || 70,
+    };
+
+    if (selectedClientIdForMacros === currentUser.id) {
+      updateMacroTargets(newTargets);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Macro Goals Updated', 'Personal daily macro goals saved.');
+      setShowMacroModal(false);
+      setSelectedClientIdForMacros(null);
+      return;
+    }
+
     const client = clients.find((c) => c.id === selectedClientIdForMacros);
     if (!client) return;
 
-    updateClient({
-      ...client,
-      macroTargets: {
-        calories: parseInt(targetCalories, 10) || 2400,
-        protein: parseInt(targetProtein, 10) || 160,
-        carbs: parseInt(targetCarbs, 10) || 240,
-        fats: parseInt(targetFats, 10) || 70,
-      },
-    });
+    // Push macro targets directly to client's Firestore profile & coach roster
+    assignClientMacros(selectedClientIdForMacros, newTargets);
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert('Macro Goals Updated', `Prescribed macro goals saved for ${client.name}.`);
@@ -164,7 +228,7 @@ export default function MealPlansScreen() {
             )
           : ['• Flexible dieting adhering to macros']),
         `━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-        `Track directly in Pumpd App.`,
+        `Track directly in RIPPED App.`,
       ].join('\n');
 
       await Share.share({
@@ -180,9 +244,13 @@ export default function MealPlansScreen() {
     <View className="flex-1 bg-dark-bg">
       {/* Header action bar */}
       <View className="bg-dark-card border-b border-dark-border px-4 py-3 flex-row items-center justify-between">
-        <View>
-          <Text className="text-white font-extrabold text-base">Meal Plans & Diets</Text>
-          <Text className="text-zinc-400 text-xs">Prescribe meals & macro targets to clients</Text>
+        <View className="flex-1 mr-3 min-w-0">
+          <Text className="text-white font-extrabold text-base" numberOfLines={1}>
+            Meal Plans & Diets
+          </Text>
+          <Text className="text-zinc-400 text-xs" numberOfLines={1}>
+            Prescribe meals & macro targets to clients
+          </Text>
         </View>
 
         <TouchableOpacity
@@ -190,7 +258,7 @@ export default function MealPlansScreen() {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             setShowCreateModal(true);
           }}
-          className="bg-accent-cyan px-3 py-2 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20"
+          className="bg-accent-cyan px-3 py-2 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20 shrink-0"
         >
           <Ionicons name="add" size={18} color="#09090B" />
           <Text className="text-black font-extrabold text-xs">New Meal</Text>
@@ -218,6 +286,41 @@ export default function MealPlansScreen() {
               <Ionicons name="pie-chart" size={16} color="#06B6D4" />
               <Text className="text-sm font-black text-white">Client Macro Prescriptions</Text>
             </View>
+          </View>
+
+          {/* Coach's Own Macro Goals Card */}
+          <View className="bg-cyan-950/20 border border-cyan-500/40 rounded-xl p-3 mb-2 flex-row items-center justify-between">
+            <View className="flex-row items-center space-x-2.5 flex-1 mr-2">
+              <View className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-400/40 items-center justify-center">
+                <Text className="text-base">👤</Text>
+              </View>
+              <View className="flex-1">
+                <View className="flex-row items-center space-x-1.5">
+                  <Text className="text-xs font-bold text-white">Myself (Personal Targets)</Text>
+                  <View className="bg-cyan-500/20 px-1 py-0.2 rounded">
+                    <Text className="text-[8px] font-black text-cyan-400">YOU</Text>
+                  </View>
+                </View>
+                <Text className="text-[10px] text-cyan-300/80 font-mono">
+                  {currentUser.macroTargets.calories} kcal • {currentUser.macroTargets.protein}P • {currentUser.macroTargets.carbs}C • {currentUser.macroTargets.fats}F
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSelectedClientIdForMacros(currentUser.id);
+                setTargetCalories(currentUser.macroTargets.calories.toString());
+                setTargetProtein(currentUser.macroTargets.protein.toString());
+                setTargetCarbs(currentUser.macroTargets.carbs.toString());
+                setTargetFats(currentUser.macroTargets.fats.toString());
+                setShowMacroModal(true);
+              }}
+              className="bg-cyan-500/20 border border-cyan-500/50 px-2.5 py-1.5 rounded-lg"
+            >
+              <Text className="text-[10px] font-bold text-cyan-300">Edit Goals</Text>
+            </TouchableOpacity>
           </View>
 
           {clients.length === 0 ? (
@@ -272,17 +375,17 @@ export default function MealPlansScreen() {
         <View className="mb-6">
           <View className="flex-row items-center justify-between mb-2.5">
             <Text className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
-              Meal Archetypes Library ({prescribedArchetypes.length})
+              Meal Archetypes Library ({coachMeals.length})
             </Text>
           </View>
 
-          {prescribedArchetypes.length === 0 ? (
+          {coachMeals.length === 0 ? (
             <View className="items-center py-12">
               <Ionicons name="fast-food-outline" size={36} color="#71717A" />
               <Text className="text-zinc-400 text-xs mt-2">No meal templates created yet.</Text>
             </View>
           ) : (
-            prescribedArchetypes.map((arch) => (
+            coachMeals.map((arch) => (
               <View
                 key={arch.id}
                 className="bg-dark-card border border-dark-border rounded-2xl p-4 mb-3 shadow-md"
@@ -469,15 +572,43 @@ export default function MealPlansScreen() {
               </TouchableOpacity>
             </View>
 
-            <Text className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3">
-              Select Client
-            </Text>
+            <ScrollView className="mb-4">
+              {/* Option 1: Coach's own Personal Athlete Profile */}
+              <TouchableOpacity
+                onPress={handleAssignArchetypeToSelf}
+                className="p-3.5 bg-cyan-950/30 border border-cyan-500/50 rounded-xl mb-2.5 flex-row items-center justify-between"
+              >
+                <View className="flex-row items-center space-x-3 flex-1 mr-2">
+                  <View className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400/50 items-center justify-center">
+                    <Text className="text-xl">🥗</Text>
+                  </View>
+                  <View className="flex-1">
+                    <View className="flex-row items-center space-x-2">
+                      <Text className="text-sm font-bold text-white">Myself (Personal Profile)</Text>
+                      <View className="bg-cyan-500/20 px-1.5 py-0.5 rounded">
+                        <Text className="text-[9px] font-black text-cyan-400">YOU</Text>
+                      </View>
+                    </View>
+                    <Text className="text-xs text-cyan-300/80">
+                      Add to your personal Quick Add meal archetypes
+                    </Text>
+                  </View>
+                </View>
 
-            {clients.length === 0 ? (
-              <Text className="text-zinc-400 text-sm text-center py-6">No clients in roster.</Text>
-            ) : (
-              <ScrollView className="mb-4">
-                {clients.map((c) => {
+                <View className="px-3 py-1.5 rounded-lg bg-cyan-500">
+                  <Text className="text-xs font-bold text-black">Add to Me</Text>
+                </View>
+              </TouchableOpacity>
+
+              <View className="h-px bg-zinc-800 my-2" />
+              <Text className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">
+                Clients Roster ({clients.length})
+              </Text>
+
+              {clients.length === 0 ? (
+                <Text className="text-zinc-500 text-xs text-center py-4">No clients in roster yet.</Text>
+              ) : (
+                clients.map((c) => {
                   const alreadyPrescribed = c.prescribedArchetypes.some(
                     (a) => a.id === selectedArchetypeToAssign?.id
                   );
@@ -513,9 +644,9 @@ export default function MealPlansScreen() {
                       </View>
                     </TouchableOpacity>
                   );
-                })}
-              </ScrollView>
-            )}
+                })
+              )}
+            </ScrollView>
           </View>
         </View>
       </Modal>

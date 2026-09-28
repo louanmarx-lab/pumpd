@@ -6,6 +6,7 @@ export interface WorkoutTimerState {
 }
 
 export interface StoredTimerData {
+  sessionId?: string | number;
   startTime: number | null;
   accumulatedTime: number;
   isRunning: boolean;
@@ -15,10 +16,14 @@ export interface StoredTimerData {
 export interface UseWorkoutTimerOptions {
   /** Automatically start the timer on mount if no active timer is stored. Default: true */
   autoStart?: boolean;
-  /** Storage key used for persisting the timer state in AsyncStorage. Default: '@pumpd_active_workout_timer' */
+  /** Storage key used for persisting the timer state in AsyncStorage. Default: '@ripped_active_workout_timer' */
   storageKey?: string;
   /** Optional initial accumulated seconds. Default: 0 */
   initialAccumulatedTime?: number;
+  /** Unique session identifier or timestamp to prevent restoring stale workouts from previous sessions */
+  sessionId?: string | number;
+  /** Max hours before an abandoned session timer is considered stale and discarded. Default: 3 */
+  maxStaleHours?: number;
 }
 
 export interface UseWorkoutTimerReturn {

@@ -1,12 +1,12 @@
 {
   "expo": {
-    "name": "Pumpd",
-    "slug": "pumpd",
+    "name": "RIPPED",
+    "slug": "ripped",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "scheme": "pumpd",
+    "scheme": "ripped",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
@@ -18,24 +18,42 @@
     },
     "android": {
       "package": "com.multiplier.ripped",
-      "googleServicesFile": "./google-services.json",
+      "versionCode": 8,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#09090B"
+        "backgroundColor": "#FFFFFF"
       },
-      "userInterfaceStyle": "dark"
+      "userInterfaceStyle": "dark",
+      "permissions": [
+        "CAMERA",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow RIPPED to access your camera to scan workout QR codes."
+        }
+      ]
     ],
+    "updates": {
+      "url": "https://u.expo.dev/5d872213-25f7-4a4c-b1b6-753d3c67634d"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "d5227e8a-40c4-4cca-ad85-a0034604643a"
+        "projectId": "5d872213-25f7-4a4c-b1b6-753d3c67634d"
       }
-    }
+    },
+    "owner": "loubrytsite"
   }
 }

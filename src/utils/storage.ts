@@ -14,27 +14,35 @@ import {
   CoachProfile,
   ClientProfile,
   PrescribedMealArchetype,
+  LinkedCoach,
+  TrainerSubscription,
+  AthleteMembership,
+  AccountType,
 } from '../types/trainer';
 
 export const STORAGE_KEYS = {
-  INITIALIZED: '@pumpd_initialized_v1',
-  CURRENT_USER: '@pumpd_current_user',
-  PARTNER_USER: '@pumpd_partner_user',
-  ACTIVE_USER_ID: '@pumpd_active_user_id',
-  WORKSPACE: '@pumpd_workspace',
-  EXERCISES: '@pumpd_exercises',
-  SPLITS: '@pumpd_splits',
-  WORKOUT_LOGS: '@pumpd_workout_logs',
-  NUTRITION_LOGS: '@pumpd_nutrition_logs',
-  BODY_METRICS: '@pumpd_body_metrics',
-  USER_SCHEDULES: '@pumpd_user_schedules',
+  INITIALIZED: '@ripped_initialized_v1',
+  CURRENT_USER: '@ripped_current_user',
+  PARTNER_USER: '@ripped_partner_user',
+  ACTIVE_USER_ID: '@ripped_active_user_id',
+  WORKSPACE: '@ripped_workspace',
+  EXERCISES: '@ripped_exercises',
+  SPLITS: '@ripped_splits',
+  WORKOUT_LOGS: '@ripped_workout_logs',
+  NUTRITION_LOGS: '@ripped_nutrition_logs',
+  BODY_METRICS: '@ripped_body_metrics',
+  USER_SCHEDULES: '@ripped_user_schedules',
   // Trainer & Client Dual Mode Keys
-  USER_ROLE: '@pumpd_user_role',
-  COACH_PROFILE: '@pumpd_coach_profile',
-  CLIENTS: '@pumpd_clients',
-  PRESCRIBED_ARCHETYPES: '@pumpd_prescribed_archetypes',
-  ACTIVE_SESSION: '@pumpd_auth_session',
-  REGISTERED_ACCOUNTS: '@pumpd_registered_accounts',
+  USER_ROLE: '@ripped_user_role',
+  ACCOUNT_TYPE: '@ripped_account_type',
+  COACH_PROFILE: '@ripped_coach_profile',
+  CLIENTS: '@ripped_clients',
+  PRESCRIBED_ARCHETYPES: '@ripped_prescribed_archetypes',
+  LINKED_COACH: '@ripped_linked_coach',
+  TRAINER_SUBSCRIPTION: '@ripped_trainer_subscription',
+  ATHLETE_MEMBERSHIP: '@ripped_athlete_membership',
+  ACTIVE_SESSION: '@ripped_auth_session',
+  REGISTERED_ACCOUNTS: '@ripped_registered_accounts',
 } as const;
 
 export interface AppStoredData {
@@ -49,9 +57,13 @@ export interface AppStoredData {
   bodyMetrics: BodyMetric[] | null;
   userSchedules: Record<string, DaySchedule[]> | null;
   userRole: UserRole | null;
+  accountType: AccountType | null;
   coachProfile: CoachProfile | null;
   clients: ClientProfile[] | null;
   prescribedArchetypes: PrescribedMealArchetype[] | null;
+  linkedCoach: LinkedCoach | null;
+  trainerSubscription: TrainerSubscription | null;
+  athleteMembership: AthleteMembership | null;
 }
 
 export async function loadStoredAppData(): Promise<AppStoredData | null> {
@@ -73,16 +85,25 @@ export async function loadStoredAppData(): Promise<AppStoredData | null> {
       STORAGE_KEYS.BODY_METRICS,
       STORAGE_KEYS.USER_SCHEDULES,
       STORAGE_KEYS.USER_ROLE,
+      STORAGE_KEYS.ACCOUNT_TYPE,
       STORAGE_KEYS.COACH_PROFILE,
       STORAGE_KEYS.CLIENTS,
       STORAGE_KEYS.PRESCRIBED_ARCHETYPES,
+      STORAGE_KEYS.LINKED_COACH,
+      STORAGE_KEYS.TRAINER_SUBSCRIPTION,
+      STORAGE_KEYS.ATHLETE_MEMBERSHIP,
     ];
 
     const pairs = await AsyncStorage.multiGet(keys);
     const dataMap: Record<string, string | null> = {};
-    pairs.forEach(([k, v]) => {
-      dataMap[k] = v;
-    });
+    for (const [k, v] of pairs) {
+      if (v !== null) {
+        dataMap[k] = v;
+      } else {
+        const legacyKey = k.replace('@ripped_', '@pumpd_');
+        dataMap[k] = await AsyncStorage.getItem(legacyKey);
+      }
+    }
 
     const safeParse = <T>(val: string | null | undefined): T | null => {
       if (!val) return null;
@@ -105,9 +126,13 @@ export async function loadStoredAppData(): Promise<AppStoredData | null> {
       bodyMetrics: safeParse<BodyMetric[]>(dataMap[STORAGE_KEYS.BODY_METRICS]),
       userSchedules: safeParse<Record<string, DaySchedule[]>>(dataMap[STORAGE_KEYS.USER_SCHEDULES]),
       userRole: safeParse<UserRole>(dataMap[STORAGE_KEYS.USER_ROLE]) || (dataMap[STORAGE_KEYS.USER_ROLE] as UserRole) || null,
+      accountType: (dataMap[STORAGE_KEYS.ACCOUNT_TYPE] as AccountType) || null,
       coachProfile: safeParse<CoachProfile>(dataMap[STORAGE_KEYS.COACH_PROFILE]),
       clients: safeParse<ClientProfile[]>(dataMap[STORAGE_KEYS.CLIENTS]),
       prescribedArchetypes: safeParse<PrescribedMealArchetype[]>(dataMap[STORAGE_KEYS.PRESCRIBED_ARCHETYPES]),
+      linkedCoach: safeParse<LinkedCoach>(dataMap[STORAGE_KEYS.LINKED_COACH]),
+      trainerSubscription: safeParse<TrainerSubscription>(dataMap[STORAGE_KEYS.TRAINER_SUBSCRIPTION]),
+      athleteMembership: safeParse<AthleteMembership>(dataMap[STORAGE_KEYS.ATHLETE_MEMBERSHIP]),
     };
   } catch (err) {
     console.error('[Storage] Error loading app data:', err);
@@ -127,9 +152,13 @@ export async function persistAppData(data: {
   bodyMetrics: BodyMetric[];
   userSchedules: Record<string, DaySchedule[]>;
   userRole?: UserRole;
+  accountType?: AccountType | null;
   coachProfile?: CoachProfile;
   clients?: ClientProfile[];
   prescribedArchetypes?: PrescribedMealArchetype[];
+  linkedCoach?: LinkedCoach | null;
+  trainerSubscription?: TrainerSubscription | null;
+  athleteMembership?: AthleteMembership | null;
 }): Promise<void> {
   try {
     const pairs: [string, string][] = [
@@ -149,6 +178,9 @@ export async function persistAppData(data: {
     if (data.userRole) {
       pairs.push([STORAGE_KEYS.USER_ROLE, JSON.stringify(data.userRole)]);
     }
+    if (data.accountType) {
+      pairs.push([STORAGE_KEYS.ACCOUNT_TYPE, data.accountType]);
+    }
     if (data.coachProfile) {
       pairs.push([STORAGE_KEYS.COACH_PROFILE, JSON.stringify(data.coachProfile)]);
     }
@@ -157,6 +189,27 @@ export async function persistAppData(data: {
     }
     if (data.prescribedArchetypes) {
       pairs.push([STORAGE_KEYS.PRESCRIBED_ARCHETYPES, JSON.stringify(data.prescribedArchetypes)]);
+    }
+    if (data.linkedCoach !== undefined) {
+      if (data.linkedCoach) {
+        pairs.push([STORAGE_KEYS.LINKED_COACH, JSON.stringify(data.linkedCoach)]);
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.LINKED_COACH);
+      }
+    }
+    if (data.trainerSubscription !== undefined) {
+      if (data.trainerSubscription) {
+        pairs.push([STORAGE_KEYS.TRAINER_SUBSCRIPTION, JSON.stringify(data.trainerSubscription)]);
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.TRAINER_SUBSCRIPTION);
+      }
+    }
+    if (data.athleteMembership !== undefined) {
+      if (data.athleteMembership) {
+        pairs.push([STORAGE_KEYS.ATHLETE_MEMBERSHIP, JSON.stringify(data.athleteMembership)]);
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.ATHLETE_MEMBERSHIP);
+      }
     }
 
     await AsyncStorage.multiSet(pairs);
@@ -179,6 +232,7 @@ export interface UserSession {
   email: string;
   displayName: string;
   userRole?: UserRole;
+  accountType?: AccountType;
 }
 
 export interface StoredAccount {
@@ -187,6 +241,7 @@ export interface StoredAccount {
   displayName: string;
   password?: string;
   userRole?: UserRole;
+  accountType?: AccountType;
   createdAt: number;
 }
 
@@ -242,7 +297,10 @@ export async function loadUserData(userId: string): Promise<{
   userRole?: UserRole | null;
 } | null> {
   try {
-    const raw = await AsyncStorage.getItem(`@pumpd_user_data_${userId}`);
+    let raw = await AsyncStorage.getItem(`@ripped_user_data_${userId}`);
+    if (!raw) {
+      raw = await AsyncStorage.getItem(`@pumpd_user_data_${userId}`);
+    }
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -259,7 +317,7 @@ export async function persistUserData(
   }
 ): Promise<void> {
   try {
-    await AsyncStorage.setItem(`@pumpd_user_data_${userId}`, JSON.stringify(data));
+    await AsyncStorage.setItem(`@ripped_user_data_${userId}`, JSON.stringify(data));
   } catch (err) {
     console.error('[Storage] Error saving user data:', err);
   }

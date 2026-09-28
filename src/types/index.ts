@@ -17,6 +17,7 @@ export interface MacroTargets {
   carbs: number;
   fats: number;
   dailyProteinGoalGrams?: number;
+  waterTargetMl?: number;
 }
 
 export type DayOfWeek =
@@ -35,6 +36,8 @@ export interface DaySchedule {
   exerciseIds?: string[];
 }
 
+export type WeightUnit = 'kg' | 'lbs';
+
 export interface UserProfile {
   id: string;
   displayName: string;
@@ -42,7 +45,12 @@ export interface UserProfile {
   activeWorkspaceId: string;
   macroTargets: MacroTargets;
   weeklySchedule?: DaySchedule[];
+  weightUnit?: WeightUnit;
   createdAt: number | string;
+  prescribedArchetypes?: any[];
+  linkedCoach?: any;
+  athleteMembership?: any;
+  splits?: any[];
 }
 
 export interface Workspace {
@@ -58,6 +66,9 @@ export interface Exercise {
   name: string;
   muscleGroup: MuscleGroup;
   equipment: string;
+  notes?: string;
+  customByCoach?: boolean;
+  isStarred?: boolean;
 }
 
 export interface Routine {
@@ -73,6 +84,7 @@ export interface Split {
   description?: string;
   routines: Routine[];
   isActive: boolean;
+  isStarred?: boolean;
 }
 
 export interface SetLog {
@@ -95,11 +107,15 @@ export interface WorkoutLog {
   userId: string;
   workspaceId: string;
   splitId: string;
+  routineId?: string;
   routineName: string;
   date: string; // YYYY-MM-DD
   timestamp: number;
   durationSeconds?: number;
   exercises: LoggedExercise[];
+  loggedBy?: 'athlete' | 'coach';
+  coachId?: string;
+  coachName?: string;
 }
 
 export interface Meal {
@@ -110,6 +126,7 @@ export interface Meal {
   carbs: number;
   fats: number;
   timestamp: number;
+  recipe?: string;
 }
 
 export interface NutritionLog {
@@ -117,6 +134,7 @@ export interface NutritionLog {
   userId: string;
   date: string; // YYYY-MM-DD
   meals: Meal[];
+  waterMl?: number;
 }
 
 export interface BodyMetric {

@@ -7,7 +7,7 @@ import {
   UseWorkoutTimerReturn,
 } from '../types/workoutTimer';
 
-const DEFAULT_STORAGE_KEY = '@pumpd_active_workout_timer';
+const DEFAULT_STORAGE_KEY = '@ripped_active_workout_timer';
 
 /**
  * Format total seconds into a readable string: HH:MM:SS or MM:SS
@@ -40,6 +40,8 @@ export function useWorkoutTimer(
     autoStart = true,
     storageKey = DEFAULT_STORAGE_KEY,
     initialAccumulatedTime = 0,
+    sessionId,
+    maxStaleHours = 3,
   } = options;
 
   // 1. Core state structure
@@ -80,12 +82,15 @@ export function useWorkoutTimer(
   const persistTimer = useCallback(
     async (data: StoredTimerData) => {
       try {
-        await AsyncStorage.setItem(storageKey, JSON.stringify(data));
+        await AsyncStorage.setItem(
+          storageKey,
+          JSON.stringify({ ...data, sessionId: sessionId ?? data.sessionId })
+        );
       } catch (err) {
         console.warn('Failed to persist workout timer state:', err);
       }
     },
-    [storageKey]
+    [storageKey, sessionId]
   );
 
   /**
@@ -296,44 +301,63 @@ export function useWorkoutTimer(
         if (stored) {
           const parsed = JSON.parse(stored) as StoredTimerData;
           if (parsed && typeof parsed === 'object') {
-            const storedStart =
-              typeof parsed.startTime === 'number' ? parsed.startTime : null;
-            const storedAcc =
-              typeof parsed.accumulatedTime === 'number'
-                ? parsed.accumulatedTime
-                : 0;
-            const storedRunning = Boolean(parsed.isRunning);
+            const now = Date.now();
+            const maxStaleMs = maxStaleHours * 3600 * 1000;
+            const lastActive = parsed.lastUpdated || parsed.startTime || 0;
+            const isStale = (now - lastActive) > maxStaleMs;
+            const isDifferentSession = Boolean(
+              sessionId && parsed.sessionId && parsed.sessionId !== sessionId
+            );
 
-            let initialSeconds = storedAcc;
-            if (storedRunning && storedStart !== null) {
-              const delta = Math.max(
-                0,
-                Math.floor((Date.now() - storedStart) / 1000)
-              );
-              initialSeconds = storedAcc + delta;
+            if (isStale || isDifferentSession) {
+              // Stale timer from earlier session or hours ago: wipe to ensure fresh start
+              await AsyncStorage.removeItem(storageKey);
+            } else {
+              const storedStart =
+                typeof parsed.startTime === 'number' ? parsed.startTime : null;
+              const storedAcc =
+                typeof parsed.accumulatedTime === 'number'
+                  ? parsed.accumulatedTime
+                  : 0;
+              const storedRunning = Boolean(parsed.isRunning);
+
+              let initialSeconds = storedAcc;
+              if (storedRunning && storedStart !== null) {
+                const delta = Math.max(
+                  0,
+                  Math.floor((now - storedStart) / 1000)
+                );
+                // Sanity check: cap max workout session at 8 hours to discard abandoned sessions
+                if (storedAcc + delta < 8 * 3600) {
+                  initialSeconds = storedAcc + delta;
+                } else {
+                  await AsyncStorage.removeItem(storageKey);
+                  throw new Error('Stored timer exceeds maximum workout duration threshold');
+                }
+              }
+
+              startTimeRef.current = storedStart;
+              accumulatedTimeRef.current = storedAcc;
+              isRunningRef.current = storedRunning;
+
+              setStartTime(storedStart);
+              setAccumulatedTime(storedAcc);
+              setIsRunning(storedRunning);
+              setElapsedSeconds(initialSeconds);
+
+              if (storedRunning && AppState.currentState === 'active') {
+                startInterval();
+              }
+              return;
             }
-
-            startTimeRef.current = storedStart;
-            accumulatedTimeRef.current = storedAcc;
-            isRunningRef.current = storedRunning;
-
-            setStartTime(storedStart);
-            setAccumulatedTime(storedAcc);
-            setIsRunning(storedRunning);
-            setElapsedSeconds(initialSeconds);
-
-            if (storedRunning && AppState.currentState === 'active') {
-              startInterval();
-            }
-            return;
           }
         }
       } catch (err) {
-        console.warn('Error reading stored workout timer:', err);
+        console.warn('Cleared stale or invalid workout timer from storage:', err);
       }
 
-      // If no stored timer and autoStart is enabled, initialize fresh session
-      if (autoStart && !startTimeRef.current && isMounted) {
+      // If no valid stored timer and autoStart is enabled, initialize fresh session using phone's current time
+      if (autoStart && isMounted) {
         const now = Date.now();
         startTimeRef.current = now;
         accumulatedTimeRef.current = initialAccumulatedTime;
@@ -345,6 +369,7 @@ export function useWorkoutTimer(
         setElapsedSeconds(initialAccumulatedTime);
 
         persistTimer({
+          sessionId,
           startTime: now,
           accumulatedTime: initialAccumulatedTime,
           isRunning: true,
@@ -363,7 +388,7 @@ export function useWorkoutTimer(
       isMounted = false;
       stopInterval();
     };
-  }, [storageKey, autoStart, initialAccumulatedTime, startInterval, stopInterval, persistTimer]);
+  }, [storageKey, autoStart, initialAccumulatedTime, sessionId, maxStaleHours, startInterval, stopInterval, persistTimer]);
 
   return {
     startTime,

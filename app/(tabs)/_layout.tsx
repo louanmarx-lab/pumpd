@@ -1,16 +1,26 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { HeaderSwitcher } from '../../components/HeaderSwitcher';
-import { View, Platform } from 'react-native';
+import { HeaderBackToRosterButton } from '../../src/components/coach/HeaderBackToRosterButton';
+import { Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUserWorkspace } from '../../src/context/UserWorkspaceContext';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const { userRole } = useUserWorkspace();
+  const { userRole, managedClient, isViewingPersonalProfile, accountType } = useUserWorkspace();
   // Safe bottom padding for Samsung 3-button navigation, gesture pill, and iOS home bar
   const safeBottom = Math.max(insets.bottom, Platform.OS === 'android' ? 14 : 8);
+
+  const isManagingClient = managedClient !== null;
+  const isCoachAccount = accountType === 'coach';
+
+  // Strict deck switching:
+  // When an athlete, managing a client, or coach in personal workout mode -> 4 Athlete tabs.
+  // When coach is on Coach Hub -> 4 Coach tabs.
+  const isAthleteDeck = userRole === 'athlete' || isManagingClient || isViewingPersonalProfile;
+  const showAthleteTabs = isAthleteDeck;
+  const showCoachTabs = isCoachAccount && !isAthleteDeck;
 
   return (
     <Tabs
@@ -25,13 +35,10 @@ export default function TabsLayout() {
         headerTintColor: '#F4F4F5',
         headerTitleStyle: {
           fontWeight: 'bold',
-          fontSize: 20,
+          fontSize: 17,
         },
-        headerRight: () => (
-          <View style={{ marginRight: 12 }}>
-            <HeaderSwitcher />
-          </View>
-        ),
+        headerTitleAlign: 'center',
+        headerLeft: () => <HeaderBackToRosterButton />,
         tabBarStyle: {
           backgroundColor: '#18181B',
           borderTopColor: '#27272A',
@@ -40,7 +47,7 @@ export default function TabsLayout() {
           paddingBottom: safeBottom,
           paddingTop: 6,
         },
-        tabBarActiveTintColor: '#06B6D4',
+        tabBarActiveTintColor: isManagingClient ? '#F59E0B' : '#06B6D4',
         tabBarInactiveTintColor: '#71717A',
         tabBarLabelStyle: {
           fontSize: 11,
@@ -48,13 +55,17 @@ export default function TabsLayout() {
         },
       }}
     >
-      {/* ATHLETE TABS */}
+      {/* ATHLETE TABS (Only 4 tabs visible when on athlete deck) */}
       <Tabs.Screen
         name="workouts"
         options={{
           title: 'Workouts',
-          headerTitle: 'Pumpd',
-          href: userRole === 'athlete' ? '/workouts' : null,
+          headerTitle: isManagingClient && managedClient
+            ? `${managedClient.name.split(' ')[0]}'s Workouts`
+            : isViewingPersonalProfile
+            ? 'My Workouts'
+            : 'Ripped',
+          href: showAthleteTabs ? '/workouts' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="barbell-outline" size={size} color={color} />,
         }}
       />
@@ -62,8 +73,12 @@ export default function TabsLayout() {
         name="nutrition"
         options={{
           title: 'Nutrition',
-          headerTitle: 'Macro Tracker',
-          href: userRole === 'athlete' ? '/nutrition' : null,
+          headerTitle: isManagingClient && managedClient
+            ? `${managedClient.name.split(' ')[0]}'s Nutrition`
+            : isViewingPersonalProfile
+            ? 'My Nutrition'
+            : 'Macro Tracker',
+          href: showAthleteTabs ? '/nutrition' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="nutrition-outline" size={size} color={color} />,
         }}
       />
@@ -71,19 +86,23 @@ export default function TabsLayout() {
         name="analytics"
         options={{
           title: 'Analytics',
-          headerTitle: 'Progress & Benchmarks',
-          href: userRole === 'athlete' ? '/analytics' : null,
+          headerTitle: isManagingClient && managedClient
+            ? `${managedClient.name.split(' ')[0]}'s Progress`
+            : isViewingPersonalProfile
+            ? 'My Progress'
+            : 'Progress',
+          href: showAthleteTabs ? '/analytics' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="stats-chart-outline" size={size} color={color} />,
         }}
       />
 
-      {/* COACH CRM TABS */}
+      {/* COACH CRM TABS (Only visible when on Coach deck) */}
       <Tabs.Screen
         name="clients"
         options={{
           title: 'Clients',
-          headerTitle: 'Client Roster',
-          href: userRole === 'coach' ? '/clients' : null,
+          headerTitle: 'Clients',
+          href: showCoachTabs ? '/clients' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" size={size} color={color} />,
         }}
       />
@@ -91,8 +110,8 @@ export default function TabsLayout() {
         name="programs"
         options={{
           title: 'Programs',
-          headerTitle: 'Program Library',
-          href: userRole === 'coach' ? '/programs' : null,
+          headerTitle: 'Programs',
+          href: showCoachTabs ? '/programs' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="barbell" size={size} color={color} />,
         }}
       />
@@ -100,27 +119,24 @@ export default function TabsLayout() {
         name="meal-plans"
         options={{
           title: 'Meals',
-          headerTitle: 'Meal Plans & Diets',
-          href: userRole === 'coach' ? '/meal-plans' : null,
+          headerTitle: 'Meal Plans',
+          href: showCoachTabs ? '/meal-plans' : null,
           tabBarIcon: ({ color, size }) => <Ionicons name="restaurant-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="activity"
         options={{
-          title: 'Activity',
-          headerTitle: 'Client Activity Feed',
-          href: userRole === 'coach' ? '/activity' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="pulse-outline" size={size} color={color} />,
+          href: null,
         }}
       />
 
-      {/* SHARED SETTINGS TAB */}
+      {/* SHARED SETTINGS TAB (Tab 4 on both decks) */}
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          headerTitle: userRole === 'coach' ? 'Coach Profile & Business' : 'Profile & Mode',
+          headerTitle: 'Settings',
           tabBarIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size} color={color} />,
         }}
       />

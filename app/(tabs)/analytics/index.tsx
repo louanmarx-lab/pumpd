@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -58,10 +58,27 @@ const formatDateToISO = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
+const MONTH_SHORT = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+const formatChartDate = (dateStr: string) => {
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const monthIndex = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    return {
+      month: MONTH_SHORT[monthIndex] || parts[1],
+      day: day.toString(),
+    };
+  }
+  return { month: '', day: dateStr };
+};
+
 export default function AnalyticsScreen() {
   const {
     currentUser,
-    partnerUser,
     activeUser,
     switchActiveUser,
     workoutLogs,
@@ -69,7 +86,18 @@ export default function AnalyticsScreen() {
     bodyMetrics,
     addBodyMetric,
     deleteBodyMetric,
+    managedClient,
   } = useUserWorkspace();
+
+  // When coach is managing a client, filter data by client IDs (not coach's own ID)
+  const effectiveUserId = managedClient
+    ? (managedClient.linkedUserId || managedClient.id)
+    : activeUser.id;
+  const effectiveUserIds = managedClient
+    ? ([managedClient.id, managedClient.linkedUserId].filter(Boolean) as string[])
+    : [activeUser.id];
+
+  const weightUnit = activeUser.weightUnit || 'kg';
 
   // Top Segmented Tab Switcher
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('calendar');
@@ -85,13 +113,7 @@ export default function AnalyticsScreen() {
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [showBackdateWorkoutModal, setShowBackdateWorkoutModal] = useState(false);
 
-  // Quick toggle between active persona and partner in Calendar view
-  const [calendarUserId, setCalendarUserId] = useState<string>(activeUser.id);
-
-  // Ensure calendarUserId updates if activeUser changes externally
-  React.useEffect(() => {
-    setCalendarUserId(activeUser.id);
-  }, [activeUser.id]);
+  const calendarUserId = effectiveUserId;
 
   const handlePrevMonth = () => {
     Haptics.selectionAsync();
@@ -142,27 +164,17 @@ export default function AnalyticsScreen() {
   const userWorkoutDateSet = useMemo(() => {
     const set = new Set<string>();
     workoutLogs.forEach((l) => {
-      if (l.userId === activeUser.id) set.add(l.date);
+      if (effectiveUserIds.includes(l.userId)) set.add(l.date);
     });
     return set;
-  }, [workoutLogs, activeUser.id]);
-
-  const partnerWorkoutDateSet = useMemo(() => {
-    const set = new Set<string>();
-    if (partnerUser) {
-      workoutLogs.forEach((l) => {
-        if (l.userId === partnerUser.id) set.add(l.date);
-      });
-    }
-    return set;
-  }, [workoutLogs, partnerUser]);
+  }, [workoutLogs, effectiveUserIds.join(',')]);
 
   // Workouts on the selected calendar date for the inspected user
   const selectedDayWorkouts = useMemo(() => {
     return workoutLogs.filter(
-      (l) => l.date === selectedDate && l.userId === calendarUserId
+      (l) => l.date === selectedDate && effectiveUserIds.includes(l.userId)
     );
-  }, [workoutLogs, selectedDate, calendarUserId]);
+  }, [workoutLogs, selectedDate, effectiveUserIds.join(',')]);
 
   // ==========================================
   // 2. PROGRESSION & SEARCH STATE
@@ -171,6 +183,8 @@ export default function AnalyticsScreen() {
   const [selectedExId, setSelectedExId] = useState<string>('ex_1');
   const [showExPickerModal, setShowExPickerModal] = useState(false);
   const [progressMetric, setProgressMetric] = useState<'1rm' | 'weight' | 'volume'>('1rm');
+  const [selectedProgressionIndex, setSelectedProgressionIndex] = useState<number | null>(null);
+  const progressionScrollRef = useRef<ScrollView>(null);
 
   // Filtered exercises for picker modal
   const filteredExercises = useMemo(() => {
@@ -190,8 +204,8 @@ export default function AnalyticsScreen() {
 
   // Active user's logs for progression
   const activeUserLogs = useMemo(() => {
-    return workoutLogs.filter((l) => l.userId === activeUser.id);
-  }, [workoutLogs, activeUser.id]);
+    return workoutLogs.filter((l) => effectiveUserIds.includes(l.userId));
+  }, [workoutLogs, effectiveUserIds.join(',')]);
 
   const exerciseProgression = useMemo(() => {
     if (!selectedExercise) return [];
@@ -218,6 +232,7 @@ export default function AnalyticsScreen() {
   // ==========================================
   const [activeBodyMetricTab, setActiveBodyMetricTab] = useState<BodyMetricType>('weight');
   const [showWeightModal, setShowWeightModal] = useState(false);
+  const [showAdvancedMetrics, setShowAdvancedMetrics] = useState(false);
   const [newWeight, setNewWeight] = useState('');
   const [newBodyFat, setNewBodyFat] = useState('');
   const [newMuscleMass, setNewMuscleMass] = useState('');
@@ -226,9 +241,9 @@ export default function AnalyticsScreen() {
 
   const userMetrics = useMemo(() => {
     return bodyMetrics
-      .filter((m) => m.userId === activeUser.id)
+      .filter((m) => effectiveUserIds.includes(m.userId))
       .sort((a, b) => a.date.localeCompare(b.date));
-  }, [bodyMetrics, activeUser.id]);
+  }, [bodyMetrics, effectiveUserIds.join(',')]);
 
   const handleAddWeight = () => {
     const w = parseFloat(newWeight);
@@ -252,6 +267,7 @@ export default function AnalyticsScreen() {
     setNewBodyFat('');
     setNewMuscleMass('');
     setWeighInDateOption('today');
+    setShowAdvancedMetrics(false);
     setShowWeightModal(false);
   };
 
@@ -308,10 +324,7 @@ export default function AnalyticsScreen() {
   const maxVolume = Math.max(1, ...volumeEntries.map(([, v]) => v));
 
   // Current calendar user display name
-  const inspectedUserName =
-    calendarUserId === activeUser.id
-      ? activeUser.displayName
-      : partnerUser?.displayName || 'User';
+  const inspectedUserName = activeUser.displayName;
 
   return (
     <View className="flex-1 bg-dark-bg">
@@ -459,7 +472,6 @@ export default function AnalyticsScreen() {
                   const isSelected = item.dateStr === selectedDate;
                   const isToday = item.dateStr === todayStr;
                   const hasActiveWorkout = userWorkoutDateSet.has(item.dateStr);
-                  const hasPartnerWorkout = partnerWorkoutDateSet.has(item.dateStr);
 
                   return (
                     <TouchableOpacity
@@ -491,19 +503,12 @@ export default function AnalyticsScreen() {
                           {item.dayNumber}
                         </Text>
 
-                        {/* Workout Indicator Dots */}
+                        {/* Workout Indicator Dot */}
                         <View className="flex-row items-center space-x-1 mt-0.5">
                           {hasActiveWorkout && (
                             <View
                               className={`w-1.5 h-1.5 rounded-full ${
                                 isSelected ? 'bg-black' : 'bg-accent-cyan'
-                              }`}
-                            />
-                          )}
-                          {hasPartnerWorkout && (
-                            <View
-                              className={`w-1.5 h-1.5 rounded-full ${
-                                isSelected ? 'bg-black' : 'bg-accent-purple'
                               }`}
                             />
                           )}
@@ -515,27 +520,19 @@ export default function AnalyticsScreen() {
               </View>
 
               {/* Calendar Legend */}
-              <View className="flex-row items-center justify-center space-x-4 mt-3 pt-3 border-t border-zinc-800/80">
+              <View className="flex-row items-center justify-center mt-3 pt-3 border-t border-zinc-800/80">
                 <View className="flex-row items-center space-x-1.5">
                   <View className="w-2 h-2 rounded-full bg-accent-cyan" />
                   <Text className="text-[11px] text-zinc-400 font-medium">
-                    {activeUser.displayName}
+                    Workout Completed ({activeUser.displayName})
                   </Text>
                 </View>
-                {partnerUser && (
-                  <View className="flex-row items-center space-x-1.5">
-                    <View className="w-2 h-2 rounded-full bg-accent-purple" />
-                    <Text className="text-[11px] text-zinc-400 font-medium">
-                      {partnerUser.displayName}
-                    </Text>
-                  </View>
-                )}
               </View>
             </View>
 
             {/* Selected Date Workout Detail Inspector */}
             <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
-              {/* Day Header & Duo Quick Toggle */}
+              {/* Day Header */}
               <View className="flex-row items-center justify-between mb-3 pb-3 border-b border-zinc-800">
                 <View>
                   <Text className="text-xs text-zinc-400 font-bold uppercase tracking-wider">
@@ -544,60 +541,11 @@ export default function AnalyticsScreen() {
                   <Text className="text-base font-black text-white">{selectedDate}</Text>
                 </View>
 
-                {/* Quick Toggle Persona Switcher */}
-                {partnerUser ? (
-                  <View className="flex-row bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
-                    <TouchableOpacity
-                      onPress={() => {
-                        Haptics.selectionAsync();
-                        setCalendarUserId(activeUser.id);
-                      }}
-                      className={`px-2.5 py-1 rounded-lg ${
-                        calendarUserId === activeUser.id
-                          ? 'bg-accent-cyan'
-                          : 'bg-transparent'
-                      }`}
-                    >
-                      <Text
-                        className={`text-xs font-bold ${
-                          calendarUserId === activeUser.id
-                            ? 'text-black'
-                            : 'text-zinc-400'
-                        }`}
-                      >
-                        {activeUser.displayName.split(' ')[0]}
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      onPress={() => {
-                        Haptics.selectionAsync();
-                        setCalendarUserId(partnerUser.id);
-                      }}
-                      className={`px-2.5 py-1 rounded-lg ${
-                        calendarUserId === partnerUser.id
-                          ? 'bg-accent-purple'
-                          : 'bg-transparent'
-                      }`}
-                    >
-                      <Text
-                        className={`text-xs font-bold ${
-                          calendarUserId === partnerUser.id
-                            ? 'text-white'
-                            : 'text-zinc-400'
-                        }`}
-                      >
-                        {partnerUser.displayName.split(' ')[0]}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View className="bg-zinc-900 px-3 py-1 rounded-lg border border-zinc-800">
-                    <Text className="text-xs font-bold text-accent-cyan">
-                      {activeUser.displayName}
-                    </Text>
-                  </View>
-                )}
+                <View className="bg-zinc-900 px-3 py-1 rounded-lg border border-zinc-800">
+                  <Text className="text-xs font-bold text-accent-cyan">
+                    {activeUser.displayName}
+                  </Text>
+                </View>
               </View>
 
               {/* Workouts List for Selected Date */}
@@ -766,7 +714,7 @@ export default function AnalyticsScreen() {
                 <Text className="text-[10px] text-zinc-400 font-bold uppercase">1RM PR</Text>
                 <Text className="text-base font-black text-accent-orange mt-0.5">
                   {exerciseHistory.estimated1RM > 0
-                    ? `${exerciseHistory.estimated1RM} kg`
+                    ? `${exerciseHistory.estimated1RM} ${weightUnit}`
                     : '—'}
                 </Text>
               </View>
@@ -778,7 +726,7 @@ export default function AnalyticsScreen() {
                 </Text>
                 <Text className="text-base font-black text-accent-cyan mt-0.5">
                   {exerciseHistory.bestWorkingSet
-                    ? `${exerciseHistory.bestWorkingSet.weightKg}k × ${exerciseHistory.bestWorkingSet.reps}`
+                    ? `${exerciseHistory.bestWorkingSet.weightKg}${weightUnit} × ${exerciseHistory.bestWorkingSet.reps}`
                     : '—'}
                 </Text>
               </View>
@@ -796,6 +744,7 @@ export default function AnalyticsScreen() {
 
             {/* Progression Chart Card */}
             <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-4 shadow-md">
+              {/* Header Title & Metric Mode Filter */}
               <View className="flex-row items-center justify-between mb-3">
                 <View className="flex-row items-center space-x-2">
                   <Ionicons name="trending-up" size={18} color="#06B6D4" />
@@ -805,8 +754,11 @@ export default function AnalyticsScreen() {
                 {/* Metric Mode Filter */}
                 <View className="flex-row bg-zinc-900 border border-zinc-800 p-0.5 rounded-lg">
                   <TouchableOpacity
-                    onPress={() => setProgressMetric('1rm')}
-                    className={`px-2 py-1 rounded ${
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setProgressMetric('1rm');
+                    }}
+                    className={`px-2.5 py-1 rounded ${
                       progressMetric === '1rm' ? 'bg-cyan-500' : 'bg-transparent'
                     }`}
                   >
@@ -819,8 +771,11 @@ export default function AnalyticsScreen() {
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => setProgressMetric('weight')}
-                    className={`px-2 py-1 rounded ${
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setProgressMetric('weight');
+                    }}
+                    className={`px-2.5 py-1 rounded ${
                       progressMetric === 'weight' ? 'bg-cyan-500' : 'bg-transparent'
                     }`}
                   >
@@ -833,8 +788,11 @@ export default function AnalyticsScreen() {
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => setProgressMetric('volume')}
-                    className={`px-2 py-1 rounded ${
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setProgressMetric('volume');
+                    }}
+                    className={`px-2.5 py-1 rounded ${
                       progressMetric === 'volume' ? 'bg-cyan-500' : 'bg-transparent'
                     }`}
                   >
@@ -849,54 +807,181 @@ export default function AnalyticsScreen() {
                 </View>
               </View>
 
-              {/* Visual Graph View */}
-              <View className="bg-zinc-950 p-4 rounded-xl border border-zinc-800">
-                {exerciseProgression.length > 0 ? (
-                  <View className="flex-row items-end justify-between h-40 pt-4 pb-2">
-                    {exerciseProgression.map((item, idx) => {
-                      let val = item.estimated1RM;
-                      let unit = 'kg';
-                      if (progressMetric === 'weight') val = item.maxWeightKg;
-                      if (progressMetric === 'volume') {
-                        val = item.totalVolumeKg;
-                        unit = 'kg';
-                      }
+              {/* Inspection Callout Banner for active session */}
+              {exerciseProgression.length > 0 && (() => {
+                const activeIdx = selectedProgressionIndex !== null && selectedProgressionIndex < exerciseProgression.length
+                  ? selectedProgressionIndex
+                  : exerciseProgression.length - 1;
+                const activeItem = exerciseProgression[activeIdx];
+                if (!activeItem) return null;
 
-                      const allVals = exerciseProgression.map((p) =>
-                        progressMetric === 'weight'
-                          ? p.maxWeightKg
-                          : progressMetric === 'volume'
-                          ? p.totalVolumeKg
-                          : p.estimated1RM
-                      );
-                      const minV = Math.min(...allVals);
-                      const maxV = Math.max(...allVals);
-                      const range = Math.max(1, maxV - minV);
-                      const pct = Math.max(25, Math.min(100, Math.round(((val - minV) / range) * 75 + 25)));
+                const isLatest = activeIdx === exerciseProgression.length - 1;
+                const activeVal = progressMetric === 'weight'
+                  ? activeItem.maxWeightKg
+                  : progressMetric === 'volume'
+                  ? activeItem.totalVolumeKg
+                  : activeItem.estimated1RM;
 
-                      return (
-                        <View key={idx} className="items-center flex-1 mx-1">
-                          <View className="bg-accent-cyan/20 border border-accent-cyan px-1 py-0.5 rounded mb-1.5">
-                            <Text className="text-[9px] font-bold text-accent-cyan">
-                              {progressMetric === 'volume' ? `${Math.round(val / 1000)}k` : `${val}${unit}`}
-                            </Text>
+                return (
+                  <View className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-3 mb-3 flex-row items-center justify-between">
+                    <View className="flex-1 pr-2">
+                      <View className="flex-row items-center space-x-1.5 mb-0.5">
+                        <Ionicons name="calendar-outline" size={13} color="#06B6D4" />
+                        <Text className="text-xs font-extrabold text-white">{activeItem.date}</Text>
+                        {isLatest && (
+                          <View className="bg-cyan-500/20 border border-cyan-400/50 px-1.5 py-0.5 rounded">
+                            <Text className="text-[9px] font-bold text-cyan-400">LATEST</Text>
                           </View>
-                          <View className="w-full items-center justify-end h-24">
-                            <View
-                              className="w-3 bg-accent-cyan rounded-full"
-                              style={{ height: `${pct}%` }}
-                            />
-                          </View>
-                          <Text
-                            className="text-[9px] text-zinc-500 mt-2 font-medium"
-                            numberOfLines={1}
-                          >
-                            {item.date.slice(5)}
-                          </Text>
-                        </View>
-                      );
-                    })}
+                        )}
+                      </View>
+                      <Text className="text-[11px] text-zinc-400" numberOfLines={1}>
+                        Best: <Text className="text-white font-bold">{activeItem.bestSet.weightKg}{weightUnit} × {activeItem.bestSet.reps}</Text> • {activeItem.routineName}
+                      </Text>
+                    </View>
+                    <View className="items-end">
+                      <Text className="text-sm font-black text-accent-cyan">
+                        {progressMetric === 'volume'
+                          ? `${activeVal.toLocaleString()} ${weightUnit}`
+                          : `${activeVal} ${weightUnit}`}
+                      </Text>
+                      <Text className="text-[9px] font-semibold text-zinc-500 uppercase">
+                        {progressMetric === '1rm' ? 'Est. 1RM' : progressMetric === 'weight' ? 'Max Weight' : 'Session Volume'}
+                      </Text>
+                    </View>
                   </View>
+                );
+              })()}
+
+              {/* Visual Graph View with Horizontal Scroll */}
+              <View className="bg-zinc-950 p-3 rounded-xl border border-zinc-800">
+                {exerciseProgression.length > 0 ? (
+                  <>
+                    <ScrollView
+                      ref={progressionScrollRef}
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={{
+                        minWidth: '100%',
+                        justifyContent: exerciseProgression.length <= 5 ? 'space-around' : 'flex-start',
+                        paddingHorizontal: 6,
+                        paddingTop: 10,
+                        paddingBottom: 4,
+                      }}
+                      onContentSizeChange={() => {
+                        progressionScrollRef.current?.scrollToEnd({ animated: false });
+                      }}
+                    >
+                      {(() => {
+                        const allVals = exerciseProgression.map((p) =>
+                          progressMetric === 'weight'
+                            ? p.maxWeightKg
+                            : progressMetric === 'volume'
+                            ? p.totalVolumeKg
+                            : p.estimated1RM
+                        );
+                        const minV = Math.min(...allVals);
+                        const maxV = Math.max(...allVals);
+                        const range = Math.max(1, maxV - minV);
+
+                        const activeIdx = selectedProgressionIndex !== null && selectedProgressionIndex < exerciseProgression.length
+                          ? selectedProgressionIndex
+                          : exerciseProgression.length - 1;
+
+                        return exerciseProgression.map((item, idx) => {
+                          const val = allVals[idx];
+                          const isSelected = idx === activeIdx;
+                          const isPR = val === maxV && maxV > 0;
+                          const pct = Math.max(
+                            20,
+                            Math.min(100, Math.round(((val - minV) / range) * 75 + 25))
+                          );
+
+                          const dateFormatted = formatChartDate(item.date);
+                          const displayVal = progressMetric === 'volume'
+                            ? `${(val / 1000).toFixed(val >= 10000 ? 0 : 1)}k`
+                            : `${val}${weightUnit}`;
+
+                          return (
+                            <TouchableOpacity
+                              key={idx}
+                              activeOpacity={0.8}
+                              onPress={() => {
+                                Haptics.selectionAsync();
+                                setSelectedProgressionIndex(idx);
+                              }}
+                              className="items-center justify-end w-14 mx-1 py-1"
+                            >
+                              {/* Top Value Pill */}
+                              <View className="h-6 justify-center items-center mb-1">
+                                {isPR ? (
+                                  <View className="bg-amber-400/20 border border-amber-400/60 px-1.5 py-0.5 rounded-full flex-row items-center space-x-0.5">
+                                    <Ionicons name="trophy" size={8} color="#FBBF24" />
+                                    <Text className="text-[10px] font-black text-amber-300">
+                                      {displayVal}
+                                    </Text>
+                                  </View>
+                                ) : (
+                                  <Text
+                                    className={`text-[10px] font-bold ${
+                                      isSelected
+                                        ? 'text-cyan-300 font-black'
+                                        : 'text-zinc-400'
+                                    }`}
+                                  >
+                                    {displayVal}
+                                  </Text>
+                                )}
+                              </View>
+
+                              {/* Vertical Track & Dynamic Bar */}
+                              <View
+                                className={`w-4 h-28 bg-zinc-900/90 rounded-full overflow-hidden justify-end border ${
+                                  isSelected
+                                    ? 'border-cyan-400 bg-zinc-850'
+                                    : 'border-zinc-800'
+                                }`}
+                              >
+                                <View
+                                  className={`w-full rounded-full ${
+                                    isPR
+                                      ? 'bg-amber-400'
+                                      : isSelected
+                                      ? 'bg-cyan-300'
+                                      : 'bg-cyan-500'
+                                  }`}
+                                  style={{ height: `${pct}%` }}
+                                />
+                              </View>
+
+                              {/* Two-Line Date (Never wraps or ellipses) */}
+                              <View className="items-center mt-2">
+                                <Text className="text-[9px] font-bold text-zinc-500 uppercase">
+                                  {dateFormatted.month}
+                                </Text>
+                                <Text
+                                  className={`text-xs font-black ${
+                                    isSelected ? 'text-cyan-400' : 'text-zinc-300'
+                                  }`}
+                                >
+                                  {dateFormatted.day}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        });
+                      })()}
+                    </ScrollView>
+
+                    {/* Footer scroll hint if many entries */}
+                    {exerciseProgression.length > 5 && (
+                      <View className="flex-row items-center justify-center space-x-1 pt-2 border-t border-zinc-900 mt-1">
+                        <Ionicons name="swap-horizontal" size={11} color="#71717A" />
+                        <Text className="text-[10px] text-zinc-500 font-medium">
+                          Scroll horizontally to view all {exerciseProgression.length} recorded workouts
+                        </Text>
+                      </View>
+                    )}
+                  </>
                 ) : (
                   <View className="py-8 items-center">
                     <Ionicons name="barbell-outline" size={28} color="#71717A" />
@@ -956,7 +1041,10 @@ export default function AnalyticsScreen() {
                   <Text className="text-base font-bold text-white">Body Trends</Text>
                 </View>
                 <TouchableOpacity
-                  onPress={() => setShowWeightModal(true)}
+                  onPress={() => {
+                    setShowAdvancedMetrics(false);
+                    setShowWeightModal(true);
+                  }}
                   className="bg-accent-cyan px-2.5 py-1 rounded-lg"
                 >
                   <Text className="text-[11px] font-extrabold text-black">+ Weigh-In</Text>
@@ -979,7 +1067,7 @@ export default function AnalyticsScreen() {
                       activeBodyMetricTab === 'weight' ? 'text-black' : 'text-zinc-400'
                     }`}
                   >
-                    Weight (kg)
+                    Weight ({weightUnit})
                   </Text>
                 </TouchableOpacity>
 
@@ -1015,7 +1103,7 @@ export default function AnalyticsScreen() {
                       activeBodyMetricTab === 'muscle' ? 'text-black' : 'text-zinc-400'
                     }`}
                   >
-                    Muscle (kg)
+                    Muscle ({weightUnit})
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1026,7 +1114,7 @@ export default function AnalyticsScreen() {
                   <View className="flex-row items-end justify-between h-36 pt-4 pb-2 px-1">
                     {userMetrics.map((m, idx) => {
                       let val: number | undefined = m.weightKg;
-                      let unit = 'kg';
+                      let unit: string = weightUnit;
                       let color = '#06B6D4';
 
                       if (activeBodyMetricTab === 'bodyFat') {
@@ -1035,7 +1123,7 @@ export default function AnalyticsScreen() {
                         color = '#10B981';
                       } else if (activeBodyMetricTab === 'muscle') {
                         val = m.skeletalMuscleMassKg;
-                        unit = 'kg';
+                        unit = weightUnit;
                         color = '#F59E0B';
                       }
 
@@ -1180,13 +1268,13 @@ export default function AnalyticsScreen() {
                       >
                         <Text className="text-xs text-zinc-300 font-medium w-20">{m.date}</Text>
                         <Text className="text-xs font-bold text-white flex-1 text-center">
-                          {m.weightKg} kg
+                          {m.weightKg} {weightUnit}
                         </Text>
                         <Text className="text-xs font-bold text-accent-emerald flex-1 text-center">
                           {m.bodyFatPercentage ? `${m.bodyFatPercentage}%` : '—'}
                         </Text>
                         <Text className="text-xs font-bold text-amber-400 flex-1 text-center">
-                          {m.skeletalMuscleMassKg ? `${m.skeletalMuscleMassKg} kg` : '—'}
+                          {m.skeletalMuscleMassKg ? `${m.skeletalMuscleMassKg} ${weightUnit}` : '—'}
                         </Text>
                         <TouchableOpacity
                           onPress={() => handleDeleteMetric(m.id, m.date, m.weightKg)}
@@ -1312,7 +1400,12 @@ export default function AnalyticsScreen() {
                 <Ionicons name="scale-outline" size={22} color="#06B6D4" />
                 <Text className="text-lg font-bold text-white">Log Weigh-In</Text>
               </View>
-              <TouchableOpacity onPress={() => setShowWeightModal(false)}>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowWeightModal(false);
+                  setShowAdvancedMetrics(false);
+                }}
+              >
                 <Ionicons name="close" size={24} color="#A1A1AA" />
               </TouchableOpacity>
             </View>
@@ -1386,50 +1479,90 @@ export default function AnalyticsScreen() {
             )}
 
             {/* Body Weight Field */}
-            <Text className="text-xs text-zinc-300 font-bold mb-1">Body Weight (kg) *</Text>
+            <Text className="text-xs text-zinc-300 font-bold mb-1">Body Weight ({weightUnit}) *</Text>
             <TextInput
               keyboardType="numeric"
               value={newWeight}
               onChangeText={setNewWeight}
               placeholder="e.g. 81.5"
               placeholderTextColor="#71717A"
-              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold text-lg mb-4"
+              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold text-lg mb-3"
             />
 
-            {/* Body Composition Fields */}
-            <View className="flex-row space-x-3 mb-6">
-              {/* Body Fat Percentage */}
-              <View className="flex-1">
-                <View className="flex-row items-center space-x-1 mb-1">
-                  <Ionicons name="water-outline" size={14} color="#10B981" />
-                  <Text className="text-xs text-accent-emerald font-bold">Body Fat (%)</Text>
-                </View>
-                <TextInput
-                  keyboardType="numeric"
-                  value={newBodyFat}
-                  onChangeText={setNewBodyFat}
-                  placeholder="e.g. 14.5"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold text-base"
+            {/* Advanced Metrics Dropdown Toggle */}
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setShowAdvancedMetrics(!showAdvancedMetrics);
+              }}
+              className="flex-row items-center justify-between py-2.5 px-3.5 bg-zinc-900/90 border border-zinc-800 rounded-xl mb-4"
+            >
+              <View className="flex-row items-center space-x-2">
+                <Ionicons name="options-outline" size={15} color="#06B6D4" />
+                <Text className="text-xs font-bold text-zinc-300">
+                  Body Composition (Optional)
+                </Text>
+              </View>
+              <View className="flex-row items-center space-x-1.5">
+                {(Boolean(newBodyFat) || Boolean(newMuscleMass)) && !showAdvancedMetrics && (
+                  <View className="bg-cyan-500/20 px-1.5 py-0.5 rounded border border-cyan-500/30">
+                    <Text className="text-[10px] font-bold text-cyan-400">Filled</Text>
+                  </View>
+                )}
+                <Ionicons
+                  name={showAdvancedMetrics ? 'chevron-up' : 'chevron-down'}
+                  size={15}
+                  color="#A1A1AA"
                 />
               </View>
+            </TouchableOpacity>
 
-              {/* Skeletal Muscle Mass */}
-              <View className="flex-1">
-                <View className="flex-row items-center space-x-1 mb-1">
-                  <Ionicons name="barbell-outline" size={14} color="#F59E0B" />
-                  <Text className="text-xs text-amber-400 font-bold">Muscle Mass (kg)</Text>
+            {/* Collapsible Body Composition Fields */}
+            {showAdvancedMetrics && (
+              <View className="bg-zinc-950/60 p-3.5 rounded-xl border border-zinc-800/80 mb-4">
+                <View className="flex-row items-center space-x-1.5 mb-2.5">
+                  <Ionicons name="information-circle-outline" size={13} color="#71717A" />
+                  <Text className="text-[11px] text-zinc-400 font-medium">
+                    Optional: from smart scale or DEXA scans
+                  </Text>
                 </View>
-                <TextInput
-                  keyboardType="numeric"
-                  value={newMuscleMass}
-                  onChangeText={setNewMuscleMass}
-                  placeholder="e.g. 39.5"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold text-base"
-                />
+
+                <View className="flex-row space-x-3">
+                  {/* Body Fat Percentage */}
+                  <View className="flex-1">
+                    <View className="flex-row items-center space-x-1 mb-1">
+                      <Ionicons name="water-outline" size={13} color="#10B981" />
+                      <Text className="text-[11px] text-accent-emerald font-bold">Body Fat (%)</Text>
+                    </View>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={newBodyFat}
+                      onChangeText={setNewBodyFat}
+                      placeholder="e.g. 14.5"
+                      placeholderTextColor="#71717A"
+                      className="bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-bold text-sm"
+                    />
+                  </View>
+
+                  {/* Skeletal Muscle Mass */}
+                  <View className="flex-1">
+                    <View className="flex-row items-center space-x-1 mb-1">
+                      <Ionicons name="barbell-outline" size={13} color="#F59E0B" />
+                      <Text className="text-[11px] text-amber-400 font-bold">Muscle Mass ({weightUnit})</Text>
+                    </View>
+                    <TextInput
+                      keyboardType="numeric"
+                      value={newMuscleMass}
+                      onChangeText={setNewMuscleMass}
+                      placeholder="e.g. 39.5"
+                      placeholderTextColor="#71717A"
+                      className="bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-bold text-sm"
+                    />
+                  </View>
+                </View>
               </View>
-            </View>
+            )}
 
             <TouchableOpacity
               onPress={handleAddWeight}
