@@ -54,8 +54,8 @@ export function useWorkoutTimer(
   const startTimeRef = useRef<number | null>(null);
   const accumulatedTimeRef = useRef<number>(initialAccumulatedTime);
   const isRunningRef = useRef<boolean>(false);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const appStateRef = useRef(AppState.currentState);
 
   /**
    * Pure delta calculator:

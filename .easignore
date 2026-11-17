@@ -9,3 +9,16 @@ ios/
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+
+# Build only the mobile app; keep backend, separate website and local credentials out.
+website/
+functions/
+docs/
+tests/
+scratch/
+assets/preview_tests/
+.env*
+.git/
+.agents/
+.codex/
+.aws/

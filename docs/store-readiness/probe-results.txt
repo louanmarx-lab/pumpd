@@ -1,0 +1,3 @@
+REPRODUCED: purchase grants active subscription and restore returns success without any billing SDK.
+REPRODUCED: profile, nutrition, metrics and delete helpers resolve despite denied writes. Workout save correctly rejects.
+REPRODUCED: room creation returns a waiting room despite denied backend creation.

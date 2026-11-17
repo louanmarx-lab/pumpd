@@ -21,12 +21,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 interface WorkoutReceiptModalProps {
   visible: boolean;
   receiptData: WorkoutReceiptData | null;
+  alternateReceipt?: WorkoutReceiptData;
   onClose: () => void;
 }
 
 export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
   visible,
-  receiptData,
+  receiptData: primaryReceipt,
+  alternateReceipt,
   onClose,
 }) => {
   const insets = useSafeAreaInsets();
@@ -35,6 +37,8 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
   const [routineShareCode, setRoutineShareCode] = useState<string | null>(null);
   const [isGeneratingRoutineShare, setIsGeneratingRoutineShare] = useState(false);
 
+  const [showBuddyReceipt, setShowBuddyReceipt] = useState(false);
+  const receiptData = showBuddyReceipt && alternateReceipt ? alternateReceipt : primaryReceipt;
   if (!receiptData) return null;
 
   const formatDuration = (totalSec: number) => {
@@ -187,6 +191,26 @@ export const WorkoutReceiptModal: React.FC<WorkoutReceiptModalProps> = ({
         >
           {/* Aesthetic Thermal Receipt Card */}
           <View className="w-full bg-[#121215] border-2 border-zinc-700 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+            {alternateReceipt && primaryReceipt && (
+              <View className="flex-row gap-2 mb-3">
+                {[primaryReceipt, alternateReceipt].map((receipt, index) => {
+                  const selected = showBuddyReceipt === (index === 1);
+                  return (
+                    <TouchableOpacity
+                      key={receipt.id}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      onPress={() => setShowBuddyReceipt(index === 1)}
+                      className={`flex-1 items-center rounded-xl p-3 ${selected ? 'bg-cyan-500/20' : 'bg-zinc-900'}`}
+                    >
+                      <Text className={`text-sm font-bold ${selected ? 'text-cyan-300' : 'text-zinc-300'}`} numberOfLines={1}>
+                        {receipt.athleteName}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
             {/* Background Texture & Glow */}
             <View className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none" />
             <View className="absolute bottom-0 left-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-2xl pointer-events-none" />

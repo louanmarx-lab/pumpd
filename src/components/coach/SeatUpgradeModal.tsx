@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  Linking,
   TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,9 +19,11 @@ import {
   TrainerSubscription,
   calculateCustomTierPrice,
 } from '../../types/trainer';
-import { requestSubscriptionPurchase } from '../../services/inAppPurchaseService';
+import { getStoreProducts, restorePurchases, requestSubscriptionPurchase } from '../../services/inAppPurchaseService';
 
-// Extended selection: includes the athlete plan (R59/mo) for comparison & switching
+// Extended selection: includes the athlete plan (Store monthly plan) for comparison & switching
+const LEGAL_SITE = process.env.EXPO_PUBLIC_LEGAL_SITE_URL || 'https://ripped-fitness-support.louanmarx.chatgpt.site';
+
 export type PlanSelection = TrainerSubscriptionTier | 'athlete';
 
 interface SeatUpgradeModalProps {
@@ -49,6 +52,9 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
   );
   const [isProcessing, setIsProcessing] = useState(false);
   const [customSeats, setCustomSeats] = useState('50');
+  const [products,setProducts] = useState<Awaited<ReturnType<typeof getStoreProducts>>>({});
+  const [billingNotice,setBillingNotice] = useState('');
+  useEffect(()=>{if(!visible)return;let active=true;setProducts({});setBillingNotice('Loading store prices…');void getStoreProducts().then(p=>{if(active){setProducts(p);setBillingNotice('');}}).catch(error=>{if(active)setBillingNotice(error.message);});return()=>{active=false;};},[visible]);
 
   // Sync initial selection whenever modal opens or role changes
   useEffect(() => {
@@ -59,118 +65,46 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
 
   const coachTiersList: TrainerSubscriptionTier[] = ['starter', 'standard', 'pro', 'studio'];
 
-  const parsedCustomSeats = Math.max(31, parseInt(customSeats, 10) || 50);
-  const customPrice = calculateCustomTierPrice(parsedCustomSeats);
-
-  const getEffectiveSeatLimit = (tier: TrainerSubscriptionTier) => {
-    if (tier === 'studio') return parsedCustomSeats;
-    return TIER_CONFIGS[tier].seatLimit;
-  };
-
-  const getEffectivePrice = (tier: TrainerSubscriptionTier) => {
-    if (tier === 'studio') return customPrice;
-    return TIER_CONFIGS[tier].priceZar;
-  };
-
+  const parsedCustomSeats = 50;
+  const customPrice = TIER_CONFIGS.studio.priceZar;
+  const getEffectiveSeatLimit = (tier: TrainerSubscriptionTier) => TIER_CONFIGS[tier].seatLimit;
+  const getEffectivePrice = (tier: TrainerSubscriptionTier) => TIER_CONFIGS[tier].priceZar;
   const handleSelectTier = (tier: PlanSelection) => {
     Haptics.selectionAsync();
     setSelectedTier(tier);
   };
 
   const handleAction = async () => {
-    // 1. User selected the Athlete plan
-    if (selectedTier === 'athlete') {
-      if (isCurrentlyAthlete) {
-        onClose();
-        return;
-      }
-
-      // Coach switching to Athlete plan
-      Alert.alert(
-        'Switch to Athlete Plan?',
-        'You are switching from Coach to the Individual Athlete plan (R59/mo). Your client roster and coach management tools will be hidden. Your client data will be safely stored if you re-upgrade later.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Switch to Athlete (R59/mo)',
-            style: 'destructive',
-            onPress: () => {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              onSwitchToAthlete?.();
-              onClose();
-            },
-          },
-        ]
-      );
-      return;
-    }
-
-    // 2. User selected a Coach plan that is already their current plan
-    if (selectedTier === currentSubscription.tier && !isCurrentlyAthlete) {
-      onClose();
-      return;
-    }
-
-    const effectiveSeatLimit = getEffectiveSeatLimit(selectedTier);
-    const isDowngrade = !isCurrentlyAthlete && effectiveSeatLimit < currentSubscription.seatLimit;
-
-    // Downgrade check for active seats
-    if (isDowngrade && activeSeatsUsed > effectiveSeatLimit) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      onClose();
-      onRequireDowngradeReconcile(selectedTier);
-      return;
-    }
-
+    if (!products[selectedTier]) { setBillingNotice('This plan is not available for purchase in this build.'); return; }
     setIsProcessing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const result = await requestSubscriptionPurchase(selectedTier);
     setIsProcessing(false);
 
-    if (result.success && result.tier) {
+    if (result.success && result.access) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      onUpgradeSuccess(result.tier, selectedTier === 'studio' ? parsedCustomSeats : undefined);
-      Alert.alert(
-        'Subscription Updated! 🚀',
-        selectedTier === 'studio'
-          ? `Your plan is now Custom with ${parsedCustomSeats} client seats at R${customPrice}/mo.`
-          : `Your plan is now ${TIER_CONFIGS[selectedTier].name} with up to ${getEffectiveSeatLimit(selectedTier)} client seats at R${getEffectivePrice(selectedTier)}/mo.`
-      );
+      if(result.tier) onUpgradeSuccess(result.tier); else onSwitchToAthlete?.();
+      Alert.alert('Subscription verified', 'Your store subscription has been verified.');
       onClose();
     } else if (!result.isCancelled) {
       Alert.alert('Store Transaction Failed', result.error || 'Could not process purchase.');
     }
   };
 
-  const getActionLabel = () => {
-    if (selectedTier === 'athlete') {
-      return isCurrentlyAthlete ? 'Keep Current Plan' : 'Switch to Athlete Plan (R59/mo)';
-    }
-
-    const tierName = TIER_CONFIGS[selectedTier].name;
-    const price = selectedTier === 'studio' ? customPrice : TIER_CONFIGS[selectedTier].priceZar;
-
-    if (isCurrentlyAthlete) {
-      return `Upgrade to Coach ${tierName} (R${price}/mo)`;
-    }
-
-    if (selectedTier === currentSubscription.tier) {
-      return 'Keep Current Plan';
-    }
-
-    if (selectedTier === 'studio') {
-      return `Switch to Custom — R${customPrice}/mo (${parsedCustomSeats} seats)`;
-    }
-
-    return `Switch to ${tierName} — R${price}/mo`;
-  };
+  const getActionLabel = () => products[selectedTier] ? `Continue · ${products[selectedTier]!.priceString}/month` : 'Store billing unavailable';
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View className="flex-1 bg-black/85 justify-end">
         <View className="bg-dark-card border-t border-dark-border rounded-t-3xl p-5 max-h-[92%] shadow-2xl">
 
+          {!!billingNotice && <Text accessibilityRole="alert" className="text-sm text-amber-200 p-3">{billingNotice}</Text>}
+          <TouchableOpacity accessibilityRole="button" disabled={isProcessing} className="min-h-[48px] items-center justify-center" onPress={async()=>{
+            setIsProcessing(true);const result=await restorePurchases();setIsProcessing(false);
+            if(result.success){if(result.access?.tier && result.access.tier!=='athlete')onUpgradeSuccess(result.access.tier);else if(result.access?.tier==='athlete')onSwitchToAthlete?.();Alert.alert('Purchases checked',result.access?'Active subscription restored.':'No active subscription was found.');}
+            else setBillingNotice(result.error||'Could not restore purchases.');
+          }}><Text className="text-cyan-300 font-bold">Restore purchases</Text></TouchableOpacity>
           {/* Header */}
           <View className="flex-row items-center justify-between pb-3 border-b border-zinc-800">
             <View className="flex-row items-center space-x-2 flex-1 min-w-0 mr-2">
@@ -233,7 +167,7 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
               Select Plan (ZAR)
             </Text>
 
-            {/* ── 1. ATHLETE PLAN AT TOP FOR COMPARISON (R59/mo) ── */}
+            {/* ── 1. ATHLETE PLAN AT TOP FOR COMPARISON (Store monthly plan) ── */}
             {(() => {
               const isSelected = selectedTier === 'athlete';
               const isCurrent = isCurrentlyAthlete;
@@ -268,7 +202,7 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
                     </View>
 
                     <Text className="text-base font-black text-cyan-400">
-                      R59
+                      {products.athlete?.priceString || 'Unavailable'}
                       <Text className="text-xs text-zinc-400 font-medium">/mo</Text>
                     </Text>
                   </View>
@@ -351,7 +285,7 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
                     </View>
 
                     <Text className="text-base font-black text-amber-400">
-                      R{displayPrice}
+                      {products[tierKey]?.priceString || 'Unavailable'}
                       <Text className="text-xs text-zinc-400 font-medium">/mo</Text>
                     </Text>
                   </View>
@@ -359,39 +293,6 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
                   <Text className="text-xs text-zinc-400 font-medium mb-2.5 ml-6">
                     {displaySeats} client seats • {config.subtitle}
                   </Text>
-
-                  {/* Custom seat input (when Custom tier selected) */}
-                  {isCustom && isSelected && (
-                    <View className="ml-6 mb-3 bg-zinc-900 border border-zinc-700 rounded-xl p-3">
-                      <Text className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider mb-1.5">
-                        How many seats do you need? (min 31)
-                      </Text>
-                      <View className="flex-row items-center space-x-3">
-                        <TextInput
-                          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white font-bold text-sm"
-                          keyboardType="number-pad"
-                          value={customSeats}
-                          onChangeText={(val) => {
-                            const num = parseInt(val, 10);
-                            setCustomSeats(val);
-                            if (num >= 31) Haptics.selectionAsync();
-                          }}
-                          placeholder="e.g. 50"
-                          placeholderTextColor="#52525B"
-                          maxLength={4}
-                        />
-                        <View className="flex-1 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 items-center">
-                          <Text className="text-[10px] text-zinc-400">Total/mo</Text>
-                          <Text className="text-base font-black text-amber-400">
-                            R{calculateCustomTierPrice(parsedCustomSeats)}
-                          </Text>
-                        </View>
-                      </View>
-                      <Text className="text-[10px] text-zinc-500 mt-1.5">
-                        R699 base + R30 × {Math.max(0, parsedCustomSeats - 30)} extra seats
-                      </Text>
-                    </View>
-                  )}
 
                   <View className="ml-6 space-y-1">
                     {config.features.map((feat, idx) => (
@@ -407,14 +308,24 @@ export const SeatUpgradeModal: React.FC<SeatUpgradeModalProps> = ({
 
             {/* Note */}
             <View className="bg-zinc-900/60 rounded-xl p-3 border border-zinc-850 mt-1 mb-3">
-              <Text className="text-[10px] text-zinc-400 leading-relaxed text-center">
-                🔒 Billed via {Platform.OS === 'ios' ? 'Apple App Store' : 'Google Play'}. Recurring monthly subscription. Cancel anytime in store account settings.
+              <Text className="text-sm text-zinc-300 leading-relaxed text-center">
+                Purchases open {Platform.OS === 'ios' ? 'Apple App Store' : 'Google Play'} for confirmation. Monthly subscriptions renew unless cancelled in store settings. Plan changes follow the store’s billing schedule.
               </Text>
+            </View>
+
+            <View className="flex-row justify-center mb-3">
+              {[['Privacy policy', 'privacy.html'], ['Terms of use', 'terms.html']].map(([label, path]) => (
+                <TouchableOpacity key={path} accessibilityRole="link" accessibilityLabel={label}
+                  onPress={() => { void Linking.openURL(`${LEGAL_SITE}/${path}`).catch(() => Alert.alert('Could not open page', 'Please try again when you have an internet connection.')); }}
+                  className="min-h-[48px] px-4 justify-center">
+                  <Text className="text-sm text-cyan-300">{label}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
             {/* Action Button */}
             <TouchableOpacity
-              disabled={isProcessing}
+              disabled={isProcessing || !products[selectedTier]}
               onPress={handleAction}
               className={`w-full py-3.5 rounded-xl items-center justify-center shadow-lg mb-4 ${
                 selectedTier === 'athlete'

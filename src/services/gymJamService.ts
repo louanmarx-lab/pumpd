@@ -1,3 +1,4 @@
+import { callSecureBackend } from './secureBackend';
 import {
   doc,
   setDoc,
@@ -58,6 +59,7 @@ export interface JamRoomData {
     senderClientId?: string;
     timestamp: number;
   } | null;
+  expiresAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -96,34 +98,7 @@ export async function createJamRoomCloud(
     sessionExercisesTemplate?: SessionExerciseTemplate[];
   }
 ): Promise<JamRoomData> {
-  const roomRef = doc(db, COLLECTION_NAME, roomPin);
-
-  const roomData: JamRoomData = {
-    roomPin,
-    hostUserId: host.userId,
-    hostName: host.displayName,
-    hostRole: host.role || 'athlete',
-    routineName: workout.routineName || 'Workout Session',
-    exerciseIds: workout.exerciseIds || [],
-    sessionExercisesTemplate: workout.sessionExercisesTemplate || [],
-    guestUserId: null,
-    guestName: null,
-    status: 'waiting',
-    activeTurnUserId: host.userId,
-    activeTurnUserName: host.displayName,
-    activeExerciseIndex: 0,
-    lastEvent: null,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
-
-  try {
-    await setDoc(roomRef, sanitizeForFirestore(roomData));
-  } catch (err) {
-    console.warn('[GymJamCloud] Error creating room in cloud:', err);
-  }
-
-  return roomData;
+  return callSecureBackend<JamRoomData>('createWorkoutRoom', workout);
 }
 
 /**
@@ -202,40 +177,10 @@ export function getJamRoomCandidatePins(rawPin: string): string[] {
 export async function peekJamRoomCloud(
   rawPin: string
 ): Promise<{ success: boolean; data?: JamRoomData; error?: string; resolvedPin?: string }> {
-  const candidates = getJamRoomCandidatePins(rawPin);
-
   try {
-    for (const pin of candidates) {
-      const roomRef = doc(db, COLLECTION_NAME, pin);
-      const snap = await getDoc(roomRef);
-      if (snap.exists()) {
-        const roomData = snap.data() as JamRoomData;
-        if (roomData.status === 'ended') {
-          return {
-            success: false,
-            error: 'This RIPPED BUDDY workout session has already ended.',
-          };
-        }
-
-        return {
-          success: true,
-          data: roomData,
-          resolvedPin: pin,
-        };
-      }
-    }
-
-    return {
-      success: false,
-      error: `RIPPED BUDDY room "${candidates[0] || rawPin}" was not found. Please verify the PIN with your workout partner.`,
-    };
-  } catch (err: any) {
-    console.warn('[GymJamCloud] Error peeking room:', err);
-    return {
-      success: false,
-      error: err?.message || 'Failed to connect to RIPPED BUDDY room.',
-    };
-  }
+    const data = await callSecureBackend<JamRoomData>('workoutInvitation', { code: normalizeJamRoomPin(rawPin), join: false });
+    return { success: true, data, resolvedPin: data.roomPin };
+  } catch (error) { return { success: false, error: (error as Error).message }; }
 }
 
 /**
@@ -248,55 +193,10 @@ export async function joinJamRoomCloud(
     displayName: string;
   }
 ): Promise<{ success: boolean; data?: JamRoomData; error?: string; resolvedPin?: string }> {
-  const candidates = getJamRoomCandidatePins(roomPin);
-
   try {
-    for (const pin of candidates) {
-      const roomRef = doc(db, COLLECTION_NAME, pin);
-      const snap = await getDoc(roomRef);
-      if (snap.exists()) {
-        const roomData = snap.data() as JamRoomData;
-        if (roomData.status === 'ended') {
-          return {
-            success: false,
-            error: 'This RIPPED BUDDY workout session has already ended.',
-          };
-        }
-
-        // Connect guest (guard against identical user ID across devices)
-        const effectiveGuestUserId =
-          guest.userId === roomData.hostUserId
-            ? `${guest.userId}_guest_${Date.now()}`
-            : guest.userId;
-
-        const updates = {
-          guestUserId: effectiveGuestUserId,
-          guestName: guest.displayName,
-          status: 'connected' as const,
-          updatedAt: Date.now(),
-        };
-
-        await updateDoc(roomRef, updates);
-
-        return {
-          success: true,
-          data: { ...roomData, ...updates } as JamRoomData,
-          resolvedPin: pin,
-        };
-      }
-    }
-
-    return {
-      success: false,
-      error: 'RIPPED BUDDY room not found. Please verify the room code with the host.',
-    };
-  } catch (err: any) {
-    console.warn('[GymJamCloud] Error joining room:', err);
-    return {
-      success: false,
-      error: err?.message || 'Failed to connect to RIPPED BUDDY room.',
-    };
-  }
+    const data = await callSecureBackend<JamRoomData>('workoutInvitation', { code: normalizeJamRoomPin(roomPin), join: true });
+    return { success: true, data, resolvedPin: data.roomPin };
+  } catch (error) { return { success: false, error: (error as Error).message }; }
 }
 
 /**
@@ -406,25 +306,7 @@ export async function leaveJamRoomCloud(
   userId: string,
   isHost: boolean
 ): Promise<void> {
-  const roomRef = doc(db, COLLECTION_NAME, roomPin);
-
-  try {
-    if (isHost) {
-      await updateDoc(roomRef, {
-        status: 'ended',
-        updatedAt: Date.now(),
-      });
-    } else {
-      await updateDoc(roomRef, {
-        status: 'waiting',
-        guestUserId: null,
-        guestName: null,
-        updatedAt: Date.now(),
-      });
-    }
-  } catch (err) {
-    console.warn('[GymJamCloud] Error leaving room:', err);
-  }
+  await updateDoc(doc(db, COLLECTION_NAME, roomPin), { status: 'ended', updatedAt: Date.now() });
 }
 
 /**
@@ -444,6 +326,7 @@ export async function syncJamRoomExercisesCloud(
     }));
   } catch (err) {
     console.warn('[GymJamCloud] Error syncing full session exercises:', err);
+    throw err;
   }
 }
 

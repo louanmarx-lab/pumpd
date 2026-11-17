@@ -40,6 +40,7 @@ export type WeightUnit = 'kg' | 'lbs';
 
 export interface UserProfile {
   id: string;
+  accountType?: 'athlete' | 'coach' | 'client';
   displayName: string;
   email: string;
   activeWorkspaceId: string;
@@ -104,6 +105,7 @@ export interface LoggedExercise {
 
 export interface WorkoutLog {
   id: string;
+  transferSourceId?: string;
   userId: string;
   workspaceId: string;
   splitId: string;

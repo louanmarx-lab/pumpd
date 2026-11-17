@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,9 +7,12 @@ import {
   Modal,
   TextInput,
   Alert,
+  Share,
+  Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useUserWorkspace } from '../../../src/context/UserWorkspaceContext';
@@ -20,6 +23,9 @@ import { ShareWorkoutModal } from '../../../src/components/workouts/ShareWorkout
 import { ImportWorkoutModal } from '../../../src/components/workouts/ImportWorkoutModal';
 import { shareSplitCloud } from '../../../src/services/shareSplitService';
 import { JoinBuddyWorkoutModal } from '../../../src/components/workouts/JoinBuddyWorkoutModal';
+import { loadWorkoutDraft, WorkoutDraft, workoutDraftKey } from '../../../src/utils/workoutDraft';
+import { decodeWorkoutTransfer, encodeWorkoutTransfer } from '../../../src/utils/workoutTransfer';
+import { TrainTogetherModal } from '../../../src/components/workouts/TrainTogetherModal';
 import { JamRoomData } from '../../../src/services/gymJamService';
 
 const formatDuration = (totalSec: number) => {
@@ -53,10 +59,18 @@ export default function WorkoutsScreen() {
   const router = useRouter();
   const {
     activeUser,
+    currentUser,
+    partnerUser,
+    isHydrated,
+    firebaseUser,
+    cloudSyncStatus,
+    syncAllToCloud,
+    activeWorkspace,
     managedClient,
     splits,
     exercises,
     workoutLogs,
+    saveWorkoutLog,
     addSplit,
     addExercise,
     deleteExercise,
@@ -80,6 +94,18 @@ export default function WorkoutsScreen() {
     ? [managedClient.id, managedClient.linkedUserId].filter(Boolean) as string[]
     : [activeUser.id];
 
+  const draftKey = workoutDraftKey(currentUser.id, managedClient?.id || activeUser.id);
+  const [savedDraft, setSavedDraft] = useState<{ key: string; draft: WorkoutDraft | null } | null>(null);
+  const draft = savedDraft?.key === draftKey ? savedDraft.draft : null;
+  useFocusEffect(useCallback(() => {
+    if (!isHydrated) return;
+    let focused = true;
+    void loadWorkoutDraft(draftKey).then((value) => {
+      if (focused) setSavedDraft({ key: draftKey, draft: value });
+    }).catch(() => {});
+    return () => { focused = false; };
+  }, [draftKey, isHydrated]));
+
   type WorkoutViewTab = 'schedule' | 'splits' | 'exercises';
   const [activeTab, setActiveTab] = useState<WorkoutViewTab>('schedule');
 
@@ -94,6 +120,9 @@ export default function WorkoutsScreen() {
   const [showShareModal, setShowShareModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showJoinBuddyModal, setShowJoinBuddyModal] = useState(false);
+  const [showTogether, setShowTogether] = useState(false);
+  const [showHistoryOptions, setShowHistoryOptions] = useState(false);
+  const [showProgramOptions, setShowProgramOptions] = useState(false);
   const [sharePayload, setSharePayload] = useState<{
     code: string | null;
     title: string;
@@ -148,15 +177,84 @@ export default function WorkoutsScreen() {
 
   // Show only 3 latest workouts by default with show more toggle
   const [showAllWorkouts, setShowAllWorkouts] = useState(false);
+  const [showBuddyHistory, setShowBuddyHistory] = useState(false);
 
   // Filter workout logs belonging to effective user (client IDs when managing), sorted newest first
   const userWorkoutLogs = workoutLogs
     .filter((l) => effectiveUserIds.includes(l.userId))
     .sort((a, b) => b.timestamp - a.timestamp);
 
-  const displayedWorkouts = showAllWorkouts
-    ? userWorkoutLogs
-    : userWorkoutLogs.slice(0, 3);
+  const historyBuddy = !managedClient && activeUser.id === currentUser.id ? partnerUser : null;
+  const selectedBuddy = showBuddyHistory ? historyBuddy : null;
+  const historyLogs = selectedBuddy
+    ? workoutLogs.filter((log) => log.userId === selectedBuddy.id).sort((a, b) => b.timestamp - a.timestamp)
+    : userWorkoutLogs;
+  const displayedWorkouts = showAllWorkouts ? historyLogs : historyLogs.slice(0, 3);
+
+  const [transferCode, setTransferCode] = useState('');
+  const [sharedWorkout, setSharedWorkout] = useState<{ id: string; code: string } | null>(null);
+  const [importTarget, setImportTarget] = useState<{ ownerId: string; buddyId?: string } | null>(null);
+  const [transferNotice, setTransferNotice] = useState('');
+  const [previewWorkout, setPreviewWorkout] = useState<ReturnType<typeof decodeWorkoutTransfer> | null>(null);
+  const [isImportingWorkout, setIsImportingWorkout] = useState(false);
+  const importingWorkout = useRef(false);
+  const canImportWorkout = isHydrated && !managedClient && activeUser.id === currentUser.id;
+  const importBuddy = importTarget?.buddyId && importTarget.buddyId === historyBuddy?.id ? historyBuddy : null;
+  const canConfirmImport = canImportWorkout && importTarget?.ownerId === currentUser.id
+    && (!importTarget.buddyId || Boolean(importBuddy));
+
+  const shareBuddyWorkout = async (log: WorkoutLog) => {
+    try {
+      const message = encodeWorkoutTransfer(log);
+      if (Platform.OS === 'web') {
+        setSharedWorkout({ id: log.id, code: message });
+      } else {
+        await Share.share({ message, title: 'Import your Pumpd workout' });
+      }
+    } catch {
+      Alert.alert('Could not share workout', 'Try sharing this workout again.');
+    }
+  };
+
+  const reviewWorkoutTransfer = () => {
+    try {
+      setPreviewWorkout(decodeWorkoutTransfer(transferCode));
+      setTransferNotice('');
+    } catch (error) {
+      setTransferNotice(error instanceof Error ? error.message : 'This workout code is invalid.');
+    }
+  };
+
+  const importWorkoutTransfer = async () => {
+    if (!canConfirmImport || !previewWorkout || importingWorkout.current) return;
+    const { id, ...workout } = previewWorkout;
+    const targetId = importBuddy?.id || currentUser.id;
+    const importId = importBuddy ? `log_import_${id}_${targetId}` : `log_import_${id}`;
+    if (workoutLogs.some((log) => log.userId === targetId
+      && (log.id === importId || log.id === id || log.transferSourceId === id))) {
+      setTransferNotice('This workout is already in this history.');
+      return;
+    }
+    importingWorkout.current = true;
+    setIsImportingWorkout(true);
+    try {
+      await saveWorkoutLog({
+        ...workout,
+        transferSourceId: id,
+        userId: targetId,
+        workspaceId: activeWorkspace.id,
+        splitId: 'split_custom',
+      }, importId);
+      setShowBuddyHistory(Boolean(importBuddy));
+      setShowAllWorkouts(true);
+      setImportTarget(null);
+    } catch {
+      setTransferNotice('Could not save this workout. Try importing it again.');
+    } finally {
+      importingWorkout.current = false;
+      setIsImportingWorkout(false);
+    }
+  };
 
   const handleDeleteWorkout = (logId: string, routineName: string, date: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -270,7 +368,7 @@ export default function WorkoutsScreen() {
     setSplitPickerMode('edit');
   };
 
-  // Rolling Rotation ("Up Next in Rotation") State & Calculation
+  // Rolling Rotation ("Next workout") State & Calculation
   const [showSwitchNextRoutineModal, setShowSwitchNextRoutineModal] = useState(false);
   const [overrideNextRoutine, setOverrideNextRoutine] = useState<Routine | null>(null);
 
@@ -369,14 +467,15 @@ export default function WorkoutsScreen() {
       });
   }, [exercises, selectedMuscleGroup, exerciseSearchQuery]);
 
-  const handleStartWorkout = (routineName: string, exerciseIds: string[], routineId?: string) => {
+  const handleStartWorkout = (routineName: string, exerciseIds: string[], routineId?: string, isAdHoc = false, togetherMode?: 'phone' | 'separate') => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     setOverrideNextRoutine(null);
     router.push({
       pathname: '/active-session',
       params: {
-        splitId: activeSplit ? activeSplit.id : 'split_custom',
-        routineId: routineId || (activeSplit?.routines.find((r) => r.name === routineName)?.id),
+        togetherMode,
+        splitId: isAdHoc ? 'split_custom' : activeSplit?.id || 'split_custom',
+        routineId: isAdHoc ? undefined : routineId || activeSplit?.routines.find((r) => r.name === routineName)?.id,
         routineName,
         exerciseIds: JSON.stringify(exerciseIds),
         clientId: managedClient ? managedClient.id : undefined,
@@ -384,6 +483,14 @@ export default function WorkoutsScreen() {
         startedAt: Date.now().toString(),
       },
     });
+  };
+
+  const startTogether = (mode: 'phone' | 'separate') => {
+    setShowTogether(false);
+    const next = orderedRotationQueue[0]?.routine;
+    if (draft) handleStartWorkout(draft.title, draft.exerciseIds, draft.routineId, false, mode);
+    else if (next) handleStartWorkout(next.name, next.exerciseIds, next.id, false, mode);
+    else handleStartWorkout('Quick workout', [], undefined, true, mode);
   };
 
   const handleJoinBuddyWorkout = (room: JamRoomData) => {
@@ -453,7 +560,7 @@ export default function WorkoutsScreen() {
                   : 'text-zinc-400 font-semibold'
               }`}
             >
-              Active Schedule
+              Today
             </Text>
           </TouchableOpacity>
 
@@ -479,7 +586,7 @@ export default function WorkoutsScreen() {
                   : 'text-zinc-400 font-semibold'
               }`}
             >
-              All Programs
+              Programs
             </Text>
           </TouchableOpacity>
 
@@ -518,36 +625,20 @@ export default function WorkoutsScreen() {
       >
         {activeTab === 'schedule' && (
           <>
-            {/* RIPPED BUDDY Live Co-op Quick Join Card */}
-            <TouchableOpacity
-              activeOpacity={0.88}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                setShowJoinBuddyModal(true);
-              }}
-              className="bg-zinc-900 border border-cyan-500/40 p-3.5 rounded-2xl mb-4 flex-row items-center justify-between shadow-lg shadow-cyan-500/10"
-            >
-              <View className="flex-row items-center space-x-3 flex-1 mr-2">
-                <View className="w-11 h-11 rounded-xl bg-cyan-500/15 border border-cyan-400/40 items-center justify-center">
-                  <Ionicons name="people" size={22} color="#06B6D4" />
-                </View>
+            {draft && (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={`Resume workout: ${draft.title}`}
+                onPress={() => handleStartWorkout(draft.title, draft.exerciseIds, draft.routineId)}
+                className="bg-accent-cyan px-4 py-4 rounded-2xl mb-4 flex-row items-center gap-3"
+              >
+                <Ionicons name="play" size={20} color="#09090B" />
                 <View className="flex-1">
-                  <View className="flex-row items-center space-x-2">
-                    <Text className="text-white font-extrabold text-sm tracking-tight" numberOfLines={1}>RIPPED BUDDY</Text>
-                    <View className="bg-cyan-500/20 px-1.5 py-0.5 rounded-full border border-cyan-400/40 shrink-0">
-                      <Text className="text-[9px] font-black text-cyan-300 uppercase tracking-wider">LIVE CO-OP</Text>
-                    </View>
-                  </View>
-                  <Text className="text-xs text-zinc-400 mt-0.5" numberOfLines={1}>
-                    Join your friend's live workout with PIN or QR
-                  </Text>
+                  <Text className="text-black font-extrabold text-base">Resume workout</Text>
+                  <Text className="text-zinc-800 text-sm">{draft.title}</Text>
                 </View>
-              </View>
-              <View className="bg-cyan-500 px-3.5 py-2 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/25 shrink-0">
-                <Ionicons name="enter-outline" size={14} color="#000000" />
-                <Text className="text-black font-extrabold text-xs">Join</Text>
-              </View>
-            </TouchableOpacity>
+              </TouchableOpacity>
+            )}
 
             {/* ROLLING SPLIT ROTATION QUEUE */}
             {!activeSplit || !activeSplit.routines || activeSplit.routines.length === 0 ? (
@@ -556,21 +647,31 @@ export default function WorkoutsScreen() {
                   <Ionicons name="barbell" size={24} color="#06B6D4" />
                 </View>
                 <Text className="text-base font-black text-white mb-1 text-center">
-                  No Active Split Selected
+                  Start your first workout
                 </Text>
-                <Text className="text-xs text-zinc-400 text-center mb-4 leading-relaxed">
-                  Choose or build a training split to start your rolling workout rotation.
+                <Text className="text-sm text-zinc-400 text-center mb-4">
+                  Add exercises as you go, or start with a ready-made training program.
                 </Text>
+                {!draft && (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    onPress={() => handleStartWorkout('Quick workout', [], undefined, true)}
+                    className="bg-accent-cyan px-5 py-3 rounded-xl mb-2 min-h-[48px] justify-center"
+                  >
+                    <Text className="text-black font-extrabold text-sm">Start a workout</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
-                  activeOpacity={0.85}
+                  accessibilityRole="button"
                   onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    setActiveTab('splits');
+                    if (userRole === 'athlete' && userSplits.length === 0 && !managedClient) restoreDefaultSplits();
+                    else setActiveTab('splits');
                   }}
-                  className="bg-accent-cyan px-5 py-3 rounded-xl flex-row items-center space-x-2 shadow-md shadow-cyan-500/20"
+                  className="px-5 py-3 rounded-xl min-h-[48px] justify-center"
                 >
-                  <Ionicons name="flash" size={16} color="#09090B" />
-                  <Text className="text-black font-extrabold text-xs">Select a Split</Text>
+                  <Text className="text-cyan-300 font-bold text-sm">
+                    {userSplits.length || managedClient ? 'Browse programs' : 'Pick a starter program'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -581,12 +682,12 @@ export default function WorkoutsScreen() {
                     <View className="flex-row items-center justify-between mb-2">
                       <View className="flex-row items-center space-x-1.5 flex-1 min-w-0 mr-2">
                         <View className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />
-                        <Text className="text-[11px] font-extrabold text-accent-cyan uppercase tracking-wider" numberOfLines={1}>
-                          Up Next in Rotation
+                        <Text className="text-xs font-extrabold text-accent-cyan uppercase tracking-wider" numberOfLines={1}>
+                          Next workout
                         </Text>
                       </View>
                       <View className="flex-row items-center space-x-1 bg-cyan-500/15 border border-cyan-400/40 px-2 py-0.5 rounded-full shrink-0">
-                        <Text className="text-[9px] font-bold text-cyan-300">
+                        <Text className="text-xs font-bold text-cyan-300">
                           Step 1 of {orderedRotationQueue.length}
                         </Text>
                       </View>
@@ -609,7 +710,7 @@ export default function WorkoutsScreen() {
                       {nextRoutineInfo?.lastRoutineName && (
                         <View className="flex-row items-center space-x-1.5 mt-2.5 bg-zinc-900/80 border border-zinc-800 px-2.5 py-1.5 rounded-xl">
                           <Ionicons name="checkmark-circle-outline" size={13} color="#10B981" />
-                          <Text className="text-[11px] text-zinc-400">
+                          <Text className="text-xs text-zinc-400">
                             Last finished: <Text className="text-zinc-200 font-bold">{nextRoutineInfo.lastRoutineName}</Text> ({nextRoutineInfo.lastDate})
                           </Text>
                         </View>
@@ -627,11 +728,11 @@ export default function WorkoutsScreen() {
                             orderedRotationQueue[0].routine.id
                           )
                         }
-                        className="flex-1 bg-accent-cyan py-3 rounded-xl flex-row items-center justify-center space-x-2 shadow-md shadow-cyan-500/20"
+                        className={`flex-1 ${draft ? 'bg-zinc-800' : 'bg-accent-cyan'} min-h-[48px] py-3 rounded-xl flex-row items-center justify-center space-x-2`}
                       >
-                        <Ionicons name="play" size={16} color="#09090B" />
-                        <Text className="text-black font-extrabold text-xs tracking-wider">
-                          Start Next Workout
+                        <Ionicons name="play" size={16} color={draft ? "#D4D4D8" : "#09090B"} />
+                        <Text className={`${draft ? 'text-zinc-200' : 'text-black'} font-extrabold text-sm`}>
+                          Start workout
                         </Text>
                       </TouchableOpacity>
 
@@ -654,10 +755,10 @@ export default function WorkoutsScreen() {
                       <View className="flex-row items-center space-x-2">
                         <Ionicons name="repeat" size={16} color="#06B6D4" />
                         <Text className="text-xs font-black text-white uppercase tracking-wider">
-                          Upcoming in Rotation
+                          Coming up
                         </Text>
                       </View>
-                      <Text className="text-[11px] text-zinc-500 font-semibold">
+                      <Text className="text-xs text-zinc-400 font-semibold">
                         Moves up as you train
                       </Text>
                     </View>
@@ -694,7 +795,7 @@ export default function WorkoutsScreen() {
                                 }`}
                               >
                                 <Text
-                                  className={`text-[10px] font-black ${
+                                  className={`text-xs font-black ${
                                     isPreviouslyFinished ? 'text-emerald-400' : 'text-zinc-300'
                                   }`}
                                   numberOfLines={1}
@@ -705,7 +806,7 @@ export default function WorkoutsScreen() {
                                 </Text>
                               </View>
 
-                              <Text className="text-[11px] font-medium text-zinc-500 flex-1" numberOfLines={1} ellipsizeMode="tail">
+                              <Text className="text-xs font-medium text-zinc-400 flex-1" numberOfLines={1} ellipsizeMode="tail">
                                 {isPreviouslyFinished
                                   ? 'Moved to bottom'
                                   : `Up in ${idx + 1} workout${idx + 1 > 1 ? 's' : ''}`}
@@ -721,7 +822,7 @@ export default function WorkoutsScreen() {
                               className="bg-zinc-800 px-2.5 py-1 rounded-lg border border-zinc-700 flex-row items-center space-x-1 shrink-0"
                             >
                               <Ionicons name="arrow-up" size={11} color="#06B6D4" />
-                              <Text className="text-[10px] font-bold text-cyan-400">Make Next</Text>
+                              <Text className="text-xs font-bold text-cyan-400">Make Next</Text>
                             </TouchableOpacity>
                           </View>
 
@@ -757,15 +858,35 @@ export default function WorkoutsScreen() {
 
 
 
+            {activeSplit && !draft && (
+              <TouchableOpacity
+                accessibilityRole="button"
+                onPress={() => handleStartWorkout('Quick workout', [], undefined, true)}
+                className="border border-zinc-700 rounded-xl min-h-[48px] items-center justify-center mb-4"
+              >
+                <Text className="text-cyan-300 font-bold text-sm">Start an empty workout</Text>
+              </TouchableOpacity>
+            )}
+
+            {!managedClient && <TouchableOpacity accessibilityRole="button" onPress={() => setShowTogether(true)}
+              className="bg-zinc-900 border border-zinc-700 p-4 rounded-2xl mb-4 flex-row items-center gap-3 min-h-[64px]">
+              <Ionicons name="people-outline" size={24} color="#67E8F9" />
+              <View className="flex-1">
+                <Text className="text-base font-bold text-white">Train together</Text>
+                <Text className="text-sm text-zinc-300 mt-1">Share this phone or use separate phones</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#D4D4D8" />
+            </TouchableOpacity>}
+
       {/* 4. PREVIOUS WORKOUTS & HISTORY */}
       <View className="mb-6">
         <View className="flex-row items-center justify-between mb-3">
           <View className="flex-row items-center space-x-2 flex-1 mr-2">
             <Ionicons name="time-outline" size={20} color="#06B6D4" />
-            <Text className="text-base font-bold text-white" numberOfLines={1}>Previous Workouts</Text>
+            <Text className="text-base font-bold text-white" numberOfLines={1}>Workout history</Text>
           </View>
           <View className="flex-row items-center space-x-2">
-            <TouchableOpacity
+            {showHistoryOptions && !selectedBuddy && <TouchableOpacity
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 setShowLogPastWorkoutModal(true);
@@ -774,18 +895,74 @@ export default function WorkoutsScreen() {
             >
               <Ionicons name="add" size={14} color="#06B6D4" />
               <Text className="text-xs font-bold text-cyan-400">Log Past</Text>
-            </TouchableOpacity>
+            </TouchableOpacity>}
             <Text className="text-xs font-semibold text-zinc-400">
-              {userWorkoutLogs.length} Logged
+              {historyLogs.length} Logged
             </Text>
           </View>
         </View>
 
-        {userWorkoutLogs.length === 0 ? (
+        <TouchableOpacity accessibilityRole="button" accessibilityState={{ expanded: showHistoryOptions }}
+          onPress={() => setShowHistoryOptions(!showHistoryOptions)} className="min-h-[48px] flex-row items-center gap-2 mb-2">
+          <Ionicons name="options-outline" size={20} color="#D4D4D8" />
+          <Text className="text-sm font-semibold text-zinc-200">History options</Text>
+          <Ionicons name={showHistoryOptions ? 'chevron-up' : 'chevron-down'} size={16} color="#D4D4D8" />
+        </TouchableOpacity>
+        {showHistoryOptions && canImportWorkout && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => {
+              setTransferCode('');
+              setTransferNotice('');
+              setPreviewWorkout(null);
+              setImportTarget({ ownerId: currentUser.id, buddyId: selectedBuddy?.id });
+            }}
+            className="flex-row items-center gap-2 py-3 mb-2"
+          >
+            <Ionicons name="download-outline" size={16} color="#06B6D4" />
+            <Text className="text-cyan-300 font-bold text-sm">{selectedBuddy ? `Import workout for ${selectedBuddy.displayName}` : 'Import logged workout'}</Text>
+          </TouchableOpacity>
+        )}
+
+        {historyBuddy && (
+          <View className="flex-row gap-2 mb-3">
+            {['My workouts', historyBuddy.displayName].map((label, index) => {
+              const selected = Boolean(selectedBuddy) === (index === 1);
+              return (
+                <TouchableOpacity
+                  key={index}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  onPress={() => {
+                    setShowBuddyHistory(index === 1);
+                    setShowAllWorkouts(false);
+                  }}
+                  className={`px-3 py-2 rounded-lg ${selected ? 'bg-cyan-500/20' : 'bg-zinc-800'}`}
+                >
+                  <Text className={`text-sm font-bold ${selected ? 'text-cyan-300' : 'text-zinc-300'}`}>{label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
+        <View className="bg-zinc-900 border border-zinc-700 rounded-xl p-3 mb-3">
+          <Text accessibilityLiveRegion="polite" className="text-sm font-semibold text-zinc-100">
+            {selectedBuddy ? `${selectedBuddy.displayName} · Account not linked` : (!firebaseUser || firebaseUser.isAnonymous) ? 'Saved on this phone · Guest profile' : cloudSyncStatus === 'synced' ? 'Account sync · Synced to account' : cloudSyncStatus === 'syncing' ? 'Account sync · Sync pending' : 'Account sync · Backup pending'}
+          </Text>
+          <Text className="text-sm text-zinc-300 mt-1">
+            {selectedBuddy ? 'These workouts stay on this phone. Use History options to import their previous workouts. Open a workout to share it back to them.' : (!firebaseUser || firebaseUser.isAnonymous) ? 'Sign in from Settings to back up workouts to your account.' : 'Finished workouts are saved on this phone first.'}
+          </Text>
+          {!selectedBuddy && firebaseUser && !firebaseUser.isAnonymous && (cloudSyncStatus === 'error' || cloudSyncStatus === 'offline') && <TouchableOpacity accessibilityRole="button" onPress={() => { void syncAllToCloud().catch(() => {}); }} className="min-h-[48px] justify-center">
+            <Text className="text-sm font-bold text-cyan-300">Retry account sync</Text>
+          </TouchableOpacity>}
+        </View>
+
+        {historyLogs.length === 0 ? (
           <View className="bg-dark-card border border-dark-border p-5 rounded-2xl items-center">
             <Ionicons name="barbell-outline" size={28} color="#71717A" />
             <Text className="text-xs text-zinc-400 mt-2 text-center">
-              No previous workouts logged yet for {activeUser.displayName}.
+              No previous workouts logged yet for {selectedBuddy?.displayName || activeUser.displayName}.
             </Text>
           </View>
         ) : (
@@ -874,7 +1051,7 @@ export default function WorkoutsScreen() {
             })}
 
             {/* Show More / Show Less Toggle Button */}
-            {userWorkoutLogs.length > 3 && (
+            {historyLogs.length > 3 && (
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={() => {
@@ -886,7 +1063,7 @@ export default function WorkoutsScreen() {
                 <Text className="text-xs font-bold text-cyan-400">
                   {showAllWorkouts
                     ? 'Show Less'
-                    : `Show More (${userWorkoutLogs.length - 3} older workouts)`}
+                    : `Show More (${historyLogs.length - 3} older workouts)`}
                 </Text>
                 <Ionicons
                   name={showAllWorkouts ? 'chevron-up' : 'chevron-down'}
@@ -904,7 +1081,13 @@ export default function WorkoutsScreen() {
   {/* TAB 2: ACTIVE SPLIT */}
   {activeTab === 'splits' && (
     <View>
-      {/* 1. TOP QUICK ACTIONS TOOLBAR */}
+      <TouchableOpacity accessibilityRole="button" accessibilityState={{ expanded: showProgramOptions }} onPress={() => setShowProgramOptions(!showProgramOptions)} className="min-h-[48px] flex-row items-center gap-2 mb-3">
+        <Ionicons name="options-outline" size={20} color="#D4D4D8" />
+        <Text className="text-base font-semibold text-zinc-200">Manage programs</Text>
+        <Ionicons name={showProgramOptions ? 'chevron-up' : 'chevron-down'} size={18} color="#D4D4D8" />
+      </TouchableOpacity>
+      {showProgramOptions && (<>
+
       <View className="flex-row items-center space-x-2.5 mb-4">
         <TouchableOpacity
           onPress={() => {
@@ -949,6 +1132,8 @@ export default function WorkoutsScreen() {
         </TouchableOpacity>
       </View>
 
+      </>)}
+
       {/* 2. ACTIVE SPLIT ROUTINES */}
       <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-6 shadow-md">
         {/* Header Title Row */}
@@ -956,12 +1141,12 @@ export default function WorkoutsScreen() {
           <View className="flex-row items-center space-x-2">
             <Ionicons name="flash" size={18} color="#06B6D4" />
             <Text className="text-sm font-bold text-accent-cyan uppercase tracking-wider">
-              Active Workout Split
+              Current program
             </Text>
           </View>
           {activeSplit && (
             <View className="bg-cyan-500/20 border border-cyan-400/50 px-2 py-0.5 rounded-full">
-              <Text className="text-[10px] font-bold text-cyan-400">ACTIVE</Text>
+              <Text className="text-xs font-bold text-cyan-400">ACTIVE</Text>
             </View>
           )}
         </View>
@@ -978,7 +1163,7 @@ export default function WorkoutsScreen() {
                   {activeSplit.description}
                 </Text>
               ) : null}
-              <Text className="text-[11px] text-zinc-500 mt-1.5 font-medium">
+              <Text className="text-xs text-zinc-400 mt-1.5 font-medium">
                 {activeSplit.routines.length} routines configured for {activeUser.displayName}
               </Text>
             </View>
@@ -1015,7 +1200,7 @@ export default function WorkoutsScreen() {
         ) : (
           <View className="py-6 items-center bg-dark-bg rounded-2xl border border-zinc-800 p-4">
             <Text className="text-sm text-zinc-400 mb-4 text-center">
-              No active split set for {activeUser.displayName}.
+              No current program for {activeUser.displayName}.
             </Text>
             <View className="flex-row items-center space-x-2">
               <TouchableOpacity
@@ -1032,19 +1217,19 @@ export default function WorkoutsScreen() {
                 }}
                 className="bg-accent-cyan px-4 py-2.5 rounded-xl"
               >
-                <Text className="text-black font-bold text-sm">Create Split</Text>
+                <Text className="text-black font-bold text-sm">Create program</Text>
               </TouchableOpacity>
               {userRole === 'athlete' && userSplits.length === 0 && (
                 <TouchableOpacity
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                     restoreDefaultSplits();
-                    Alert.alert('Starter Split Added', 'A standard starter split has been added to your profile.');
+                    Alert.alert('Starter program Added', 'A standard starter split has been added to your profile.');
                   }}
                   className="bg-cyan-500/20 border border-cyan-500/50 px-3.5 py-2.5 rounded-xl flex-row items-center space-x-1.5"
                 >
                   <Ionicons name="refresh-outline" size={15} color="#06B6D4" />
-                  <Text className="text-cyan-300 font-bold text-sm">Starter Split</Text>
+                  <Text className="text-cyan-300 font-bold text-sm">Starter program</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity
@@ -1111,7 +1296,7 @@ export default function WorkoutsScreen() {
                       {isCurrentActive && (
                         <View className="bg-cyan-500/20 border border-cyan-400 px-2 py-0.5 rounded-full flex-row items-center space-x-1">
                           <View className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                          <Text className="text-[9px] font-black text-cyan-400 uppercase tracking-wider">
+                          <Text className="text-xs font-black text-cyan-400 uppercase tracking-wider">
                             ACTIVE
                           </Text>
                         </View>
@@ -1149,14 +1334,14 @@ export default function WorkoutsScreen() {
                         key={r.id || rIdx}
                         className="bg-zinc-800/80 px-2 py-0.5 rounded-md border border-zinc-700/50"
                       >
-                        <Text className="text-[10px] font-semibold text-zinc-300" numberOfLines={1}>
+                        <Text className="text-xs font-semibold text-zinc-300" numberOfLines={1}>
                           {r.name}
                         </Text>
                       </View>
                     ))}
                     {split.routines.length > 5 && (
                       <View className="bg-zinc-800/50 px-1.5 py-0.5 rounded-md border border-zinc-700/40">
-                        <Text className="text-[10px] font-bold text-zinc-400">
+                        <Text className="text-xs font-bold text-zinc-400">
                           +{split.routines.length - 5} more
                         </Text>
                       </View>
@@ -1300,7 +1485,7 @@ export default function WorkoutsScreen() {
           <View className="bg-dark-card border border-dark-border p-6 rounded-2xl items-center">
             <Ionicons name="barbell-outline" size={32} color="#71717A" />
             <Text className="text-sm text-zinc-300 font-bold mt-2">No exercises found</Text>
-            <Text className="text-xs text-zinc-500 text-center mt-1 mb-4">
+            <Text className="text-xs text-zinc-400 text-center mt-1 mb-4">
               {exerciseSearchQuery
                 ? `No exercises matching "${exerciseSearchQuery}".`
                 : 'No exercises for this muscle group.'}
@@ -1333,17 +1518,17 @@ export default function WorkoutsScreen() {
                     <Text className="text-sm font-bold text-white">{item.name}</Text>
                     {isCustom && (
                       <View className="bg-cyan-950/80 border border-cyan-500/50 px-1.5 py-0.2 rounded">
-                        <Text className="text-[9px] font-bold text-cyan-400 uppercase">Custom</Text>
+                        <Text className="text-xs font-bold text-cyan-400 uppercase">Custom</Text>
                       </View>
                     )}
                   </View>
                   <View className="flex-row items-center space-x-2">
                     <View className="bg-zinc-800 px-2 py-0.5 rounded">
-                      <Text className="text-[10px] text-zinc-300 font-medium">
+                      <Text className="text-xs text-zinc-300 font-medium">
                         {item.muscleGroup}
                       </Text>
                     </View>
-                    <Text className="text-xs text-zinc-500">• {item.equipment}</Text>
+                    <Text className="text-xs text-zinc-400">• {item.equipment}</Text>
                   </View>
                 </View>
 
@@ -1445,7 +1630,7 @@ export default function WorkoutsScreen() {
                     >
                       <View className="flex-row items-center space-x-3 flex-1 pr-2">
                         <View
-                          className={`w-8 h-8 rounded-full items-center justify-center ${
+                          className={`w-12 h-12 rounded-full items-center justify-center ${
                             isSelected ? 'bg-cyan-500' : 'bg-zinc-800'
                           }`}
                         >
@@ -1554,6 +1739,58 @@ export default function WorkoutsScreen() {
         </Modal>
       )}
 
+      {importTarget && canConfirmImport && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => { if (!isImportingWorkout) setImportTarget(null); }}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} className="flex-1 bg-black/80 justify-center px-4">
+            <View className="bg-dark-card rounded-2xl border border-zinc-800 p-5 gap-3">
+              <Text className="text-lg text-white font-bold">{importBuddy ? `Import workout for ${importBuddy.displayName}` : 'Import logged workout'}</Text>
+              {previewWorkout ? (
+                <View className="bg-zinc-900 rounded-xl p-3">
+                  <Text className="text-white font-bold">{previewWorkout.routineName}</Text>
+                  <Text className="text-sm text-zinc-400">
+                    {previewWorkout.date} · {previewWorkout.exercises.reduce((count, exercise) => count + exercise.sets.length, 0)} completed sets
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <Text className="text-sm text-zinc-300">Paste the workout code from the other phone.</Text>
+                  {!importBuddy && (!firebaseUser || firebaseUser.isAnonymous) && (
+                    <Text className="text-sm text-zinc-400">Sign in first if you want this workout in your account. Guest imports stay on this phone.</Text>
+                  )}
+                  <TextInput
+                    accessibilityLabel="Workout code"
+                    value={transferCode}
+                    onChangeText={setTransferCode}
+                    multiline
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    maxLength={250_000}
+                    className="bg-zinc-900 border border-zinc-700 rounded-xl p-3 text-white h-24"
+                  />
+                </>
+              )}
+              {!!transferNotice && <Text accessibilityRole="alert" className="text-amber-300 text-sm">{transferNotice}</Text>}
+              <TouchableOpacity
+                accessibilityRole="button"
+                disabled={isImportingWorkout}
+                onPress={previewWorkout ? () => { void importWorkoutTransfer(); } : reviewWorkoutTransfer}
+                className="bg-accent-cyan p-3 rounded-xl items-center"
+              >
+                <Text className="text-black font-bold">{isImportingWorkout ? 'Saving…' : previewWorkout ? (importBuddy ? `Save for ${importBuddy.displayName}` : 'Save to my workouts') : 'Review workout'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                accessibilityRole="button"
+                disabled={isImportingWorkout}
+                onPress={() => setImportTarget(null)}
+                className="p-3 items-center"
+              >
+                <Text className="text-white font-bold">Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      )}
+
       {/* Previous Workout Detail Inspection Modal */}
       {selectedWorkoutLog !== null && (
         <Modal
@@ -1571,7 +1808,7 @@ export default function WorkoutsScreen() {
                     {selectedWorkoutLog?.routineName}
                   </Text>
                   <Text className="text-xs text-zinc-400">
-                    {selectedWorkoutLog?.date} • {activeUser.displayName}
+                    {selectedWorkoutLog.date} • {selectedWorkoutLog.userId === partnerUser?.id ? partnerUser.displayName : activeUser.displayName}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -1586,7 +1823,7 @@ export default function WorkoutsScreen() {
               {selectedWorkoutLog && (
                 <View className="flex-row justify-between bg-zinc-900 border border-zinc-800 p-3 rounded-xl mb-4">
                   <View className="items-center flex-1">
-                    <Text className="text-[10px] text-zinc-400 font-bold uppercase">Time Elapsed</Text>
+                    <Text className="text-xs text-zinc-400 font-bold uppercase">Time Elapsed</Text>
                     <View className="flex-row items-center space-x-1 mt-0.5">
                       <Ionicons name="stopwatch" size={13} color="#06B6D4" />
                       <Text className="text-sm font-black text-cyan-400 font-mono">
@@ -1597,7 +1834,7 @@ export default function WorkoutsScreen() {
                     </View>
                   </View>
                   <View className="items-center flex-1 border-x border-zinc-800">
-                    <Text className="text-[10px] text-zinc-400 font-bold uppercase">Completed Sets</Text>
+                    <Text className="text-xs text-zinc-400 font-bold uppercase">Completed Sets</Text>
                     <Text className="text-sm font-black text-white mt-0.5">
                       {selectedWorkoutLog.exercises.reduce(
                         (acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length,
@@ -1606,7 +1843,7 @@ export default function WorkoutsScreen() {
                     </Text>
                   </View>
                   <View className="items-center flex-1">
-                    <Text className="text-[10px] text-zinc-400 font-bold uppercase">Total Volume</Text>
+                    <Text className="text-xs text-zinc-400 font-bold uppercase">Total Volume</Text>
                     <Text className="text-sm font-black text-emerald-400 mt-0.5">
                       {selectedWorkoutLog.exercises
                         .reduce(
@@ -1640,11 +1877,11 @@ export default function WorkoutsScreen() {
 
                     {/* Set Columns Header */}
                     <View className="flex-row justify-between pb-1.5 mb-1 px-1 border-b border-zinc-800/40">
-                      <Text className="text-[10px] font-bold text-zinc-500 w-10">SET</Text>
-                      <Text className="text-[10px] font-bold text-zinc-500 w-16 text-center">TYPE</Text>
-                      <Text className="text-[10px] font-bold text-zinc-500 flex-1 text-center">WEIGHT</Text>
-                      <Text className="text-[10px] font-bold text-zinc-500 flex-1 text-center">REPS</Text>
-                      <Text className="text-[10px] font-bold text-zinc-500 flex-1 text-right">EST. 1RM</Text>
+                      <Text className="text-xs font-bold text-zinc-400 w-10">SET</Text>
+                      <Text className="text-xs font-bold text-zinc-400 w-16 text-center">TYPE</Text>
+                      <Text className="text-xs font-bold text-zinc-400 flex-1 text-center">WEIGHT</Text>
+                      <Text className="text-xs font-bold text-zinc-400 flex-1 text-center">REPS</Text>
+                      <Text className="text-xs font-bold text-zinc-400 flex-1 text-right">EST. 1RM</Text>
                     </View>
 
                     {/* Sets Rows */}
@@ -1671,7 +1908,7 @@ export default function WorkoutsScreen() {
                               }`}
                             >
                               <Text
-                                className={`text-[9px] font-bold ${
+                                className={`text-xs font-bold ${
                                   s.type === 'Warmup'
                                     ? 'text-amber-400'
                                     : s.type === 'Failure'
@@ -1702,6 +1939,28 @@ export default function WorkoutsScreen() {
               </ScrollView>
 
               <View className="space-y-2 mt-3">
+                {sharedWorkout?.id === selectedWorkoutLog.id && (
+                  <View className="gap-1">
+                    <Text className="text-xs text-zinc-300">Copy the full code and send it to your buddy.</Text>
+                    <TextInput
+                      accessibilityLabel="Shared workout code"
+                      value={sharedWorkout.code}
+                      multiline
+                      editable={false}
+                      selectTextOnFocus
+                      className="bg-zinc-900 border border-zinc-700 rounded-xl p-2 text-white h-16"
+                    />
+                  </View>
+                )}
+                {canImportWorkout && (selectedWorkoutLog.userId === currentUser.id || selectedWorkoutLog.userId === partnerUser?.id) && (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    onPress={() => { void shareBuddyWorkout(selectedWorkoutLog); }}
+                    className="bg-accent-cyan py-3 rounded-xl items-center"
+                  >
+                    <Text className="text-black font-bold text-sm">{selectedWorkoutLog.userId === partnerUser?.id ? 'Share workout with buddy' : 'Share workout code'}</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
                   onPress={() => setSelectedWorkoutLog(null)}
                   className="bg-zinc-800 border border-zinc-700 py-3 rounded-xl items-center"
@@ -1749,7 +2008,7 @@ export default function WorkoutsScreen() {
                     color="#06B6D4"
                   />
                   <Text className="text-lg font-bold text-white">
-                    {splitPickerMode === 'share' ? 'Select Split to Share' : 'Select Split to Edit'}
+                    {splitPickerMode === 'share' ? 'Select program to share' : 'Select program to edit'}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -1762,8 +2021,8 @@ export default function WorkoutsScreen() {
 
               <Text className="text-xs text-zinc-400 mt-2.5 mb-3.5">
                 {splitPickerMode === 'share'
-                  ? 'Choose which workout split to generate a share code and QR for:'
-                  : 'Choose which workout split you want to modify:'}
+                  ? 'Choose which program to generate a share code and QR for:'
+                  : 'Choose which program you want to modify:'}
               </Text>
 
               <ScrollView showsVerticalScrollIndicator={false} className="mb-4">
@@ -1800,7 +2059,7 @@ export default function WorkoutsScreen() {
                           </Text>
                           {isCurrentActive && (
                             <View className="bg-cyan-500/20 border border-cyan-400/60 px-1.5 py-0.5 rounded">
-                              <Text className="text-[9px] font-bold text-cyan-400">ACTIVE</Text>
+                              <Text className="text-xs font-bold text-cyan-400">ACTIVE</Text>
                             </View>
                           )}
                         </View>
@@ -1866,6 +2125,11 @@ export default function WorkoutsScreen() {
       )}
 
       {/* RIPPED BUDDY Quick Join Modal */}
+      <TrainTogetherModal canSeparatePhones={!draft?.buddy} visible={showTogether} onClose={() => setShowTogether(false)}
+        onSharePhone={() => startTogether('phone')}
+        onSeparatePhones={() => startTogether('separate')}
+        onJoin={() => { setShowTogether(false); setShowJoinBuddyModal(true); }} />
+
       {showJoinBuddyModal && (
         <JoinBuddyWorkoutModal
           visible={showJoinBuddyModal}

@@ -279,7 +279,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
   // Delete archetype (works on default, prescribed, and custom!)
   const handleDeleteArchetype = (arch: MealArchetype) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert('Delete Archetype', `Are you sure you want to remove "${arch.name}"?`, [
+    Alert.alert('Delete meal', `Are you sure you want to remove "${arch.name}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -421,7 +421,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
             numberOfLines={1}
             ellipsizeMode="tail"
           >
-            Meal Archetypes
+            Saved meals
           </Text>
         </View>
 
@@ -622,7 +622,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                   color="#06B6D4"
                 />
                 <Text className="text-lg font-black text-white">
-                  {editingArchetype ? 'Edit Meal Archetype' : 'New Meal Archetype'}
+                  {editingArchetype ? 'Edit saved meal' : 'New saved meal'}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setShowModal(false)}>
@@ -671,7 +671,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                   maxLength={4}
                 />
                 <TextInput
-                  placeholder="Archetype Name (e.g. Protein Smoothie)"
+                  placeholder="Meal name (e.g. Protein Smoothie)"
                   placeholderTextColor="#71717A"
                   value={formName}
                   onChangeText={setFormName}
@@ -756,7 +756,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                 className="bg-accent-cyan py-3.5 rounded-xl items-center shadow-lg shadow-cyan-500/20 mb-3"
               >
                 <Text className="text-black font-extrabold text-sm">
-                  {editingArchetype ? 'Update Archetype' : 'Save Archetype'}
+                  {editingArchetype ? 'Update meal' : 'Save meal'}
                 </Text>
               </TouchableOpacity>
 
@@ -767,7 +767,7 @@ export const MealArchetypesQuickAdd: React.FC<MealArchetypesQuickAddProps> = ({ 
                   className="bg-rose-950/30 border border-rose-800/50 py-3 rounded-xl items-center mb-2"
                 >
                   <Text className="text-rose-400 font-bold text-xs">
-                    Delete Archetype
+                    Delete meal
                   </Text>
                 </TouchableOpacity>
               )}

@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider != 'anonymous'; }
+    function active() { return signedIn() && !exists(/databases/$(database)/documents/account_deletions/$(request.auth.uid)); }
+    function self(uid) { return active() && request.auth.uid == uid; }
+    function coach(uid) {
+      return active() && !exists(/databases/$(database)/documents/account_deletions/$(uid)) && (
+        (exists(/databases/$(database)/documents/coach_links/$(uid)) && get(/databases/$(database)/documents/coach_links/$(uid)).data.coachId == request.auth.uid) ||
+        (exists(/databases/$(database)/documents/shadow_owners/$(uid)) && get(/databases/$(database)/documents/shadow_owners/$(uid)).data.coachId == request.auth.uid)
+      ) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.serverEntitlements.seatLimit > 0
+      && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.serverEntitlements.expiresAt > request.time.toMillis()
+      && (uid in get(/databases/$(database)/documents/coach_seats/$(request.auth.uid)).data.activeIds || (exists(/databases/$(database)/documents/coach_links/$(uid)) && get(/databases/$(database)/documents/coach_links/$(uid)).data.clientId in get(/databases/$(database)/documents/coach_seats/$(request.auth.uid)).data.activeIds));
+    }
+    match /users/{uid} {
+      allow read: if self(uid) || coach(uid);
+      allow create: if self(uid) && !request.resource.data.keys().hasAny(['serverEntitlements','entitlementCheckedAt','linkedCoach','athleteMembership','clients']);
+      allow update: if self(uid) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['serverEntitlements','entitlementCheckedAt','linkedCoach','athleteMembership','clients']);
+      allow update: if coach(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['macroTargets','prescribedArchetypes','splits','weeklySchedule','updatedAt']);
+      allow delete: if false;
+      match /{kind}/{id} {
+        allow read,write: if kind in ['workouts','nutrition','bodyMetrics'] && (self(uid) || coach(uid));
+      }
+    }
+    match /coach_links/{uid} { allow read: if self(uid) || (active() && resource.data.coachId == request.auth.uid); allow write: if false; }
+    match /gym_jam_rooms/{code} {
+      function participant() { return active() && request.auth.uid in [resource.data.hostUserId,resource.data.guestUserId] && resource.data.expiresAt > request.time.toMillis(); }
+      allow get: if participant();
+      allow list,create,delete: if false;
+      allow update: if participant() && resource.data.status != 'ended'
+        && request.resource.data.hostUserId == resource.data.hostUserId
+        && request.resource.data.guestUserId == resource.data.guestUserId
+        && request.resource.data.roomPin == resource.data.roomPin
+        && request.resource.data.expiresAt == resource.data.expiresAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['updatedAt','status','activeTurnUserId','activeTurnUserName','activeExerciseIndex','lifters','benchmarks','sessionExercises','lastEvent','guestName']);
+    }
+    match /shared_splits/{code} { allow get: if active(); allow list: if false; allow create: if active() && request.resource.data.authorId == request.auth.uid; allow update,delete: if false; }
+    match /{document=**} { allow read,write: if false; }
+  }
+}

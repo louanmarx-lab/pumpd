@@ -184,7 +184,7 @@ export default function AnalyticsScreen() {
   const [showExPickerModal, setShowExPickerModal] = useState(false);
   const [progressMetric, setProgressMetric] = useState<'1rm' | 'weight' | 'volume'>('1rm');
   const [selectedProgressionIndex, setSelectedProgressionIndex] = useState<number | null>(null);
-  const progressionScrollRef = useRef<ScrollView>(null);
+  const progressionScrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
 
   // Filtered exercises for picker modal
   const filteredExercises = useMemo(() => {
@@ -431,7 +431,7 @@ export default function AnalyticsScreen() {
                   <Text className="text-lg font-black text-white">
                     {MONTH_NAMES[calMonth]} {calYear}
                   </Text>
-                  <Text className="text-[11px] text-zinc-400">
+                  <Text className="text-xs text-zinc-400">
                     Tap any day to inspect workout sets
                   </Text>
                 </View>
@@ -455,7 +455,7 @@ export default function AnalyticsScreen() {
               <View className="flex-row mb-2">
                 {DAY_LABELS.map((day) => (
                   <View key={day} className="flex-1 items-center">
-                    <Text className="text-[11px] font-bold text-zinc-500 uppercase">
+                    <Text className="text-xs font-bold text-zinc-400 uppercase">
                       {day}
                     </Text>
                   </View>
@@ -523,7 +523,7 @@ export default function AnalyticsScreen() {
               <View className="flex-row items-center justify-center mt-3 pt-3 border-t border-zinc-800/80">
                 <View className="flex-row items-center space-x-1.5">
                   <View className="w-2 h-2 rounded-full bg-accent-cyan" />
-                  <Text className="text-[11px] text-zinc-400 font-medium">
+                  <Text className="text-xs text-zinc-400 font-medium">
                     Workout Completed ({activeUser.displayName})
                   </Text>
                 </View>
@@ -583,7 +583,7 @@ export default function AnalyticsScreen() {
                           <Text className="text-xs font-bold text-accent-emerald">
                             {totalVolume.toLocaleString()} kg total
                           </Text>
-                          <Text className="text-[11px] text-zinc-400 font-medium">
+                          <Text className="text-xs text-zinc-400 font-medium">
                             {totalSets} sets completed
                           </Text>
                         </View>
@@ -607,15 +607,15 @@ export default function AnalyticsScreen() {
                                   key={sIdx}
                                   className="bg-zinc-900 border border-zinc-800 px-2 py-1 rounded-md mr-1.5 mb-1.5 flex-row items-center space-x-1"
                                 >
-                                  <Text className="text-[11px] font-bold text-accent-cyan">
+                                  <Text className="text-xs font-bold text-accent-cyan">
                                     {s.weightKg}kg
                                   </Text>
-                                  <Text className="text-[11px] text-zinc-400">×</Text>
-                                  <Text className="text-[11px] font-bold text-white">
+                                  <Text className="text-xs text-zinc-400">×</Text>
+                                  <Text className="text-xs font-bold text-white">
                                     {s.reps}
                                   </Text>
                                   {s.type !== 'Normal' && (
-                                    <Text className="text-[9px] text-zinc-400 font-medium ml-1">
+                                    <Text className="text-xs text-zinc-400 font-medium ml-1">
                                       ({s.type[0]})
                                     </Text>
                                   )}
@@ -634,7 +634,7 @@ export default function AnalyticsScreen() {
                     <Ionicons name="bed-outline" size={24} color="#71717A" />
                   </View>
                   <Text className="text-sm font-bold text-zinc-300">Rest Day</Text>
-                  <Text className="text-xs text-zinc-500 mt-1 text-center">
+                  <Text className="text-xs text-zinc-400 mt-1 text-center">
                     No workouts logged for {inspectedUserName} on {selectedDate}.
                   </Text>
                   <TouchableOpacity
@@ -692,12 +692,12 @@ export default function AnalyticsScreen() {
                   </Text>
                   <View className="flex-row items-center space-x-2 mt-1">
                     <View className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
-                      <Text className="text-[10px] text-accent-cyan font-bold">
+                      <Text className="text-xs text-accent-cyan font-bold">
                         {selectedExercise.muscleGroup}
                       </Text>
                     </View>
                     <View className="bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
-                      <Text className="text-[10px] text-zinc-400 font-semibold">
+                      <Text className="text-xs text-zinc-400 font-semibold">
                         {selectedExercise.equipment}
                       </Text>
                     </View>
@@ -711,7 +711,7 @@ export default function AnalyticsScreen() {
             <View className="flex-row space-x-2 mb-4">
               {/* Est 1RM PR */}
               <View className="flex-1 bg-dark-card border border-dark-border p-3 rounded-2xl">
-                <Text className="text-[10px] text-zinc-400 font-bold uppercase">1RM PR</Text>
+                <Text className="text-xs text-zinc-400 font-bold uppercase">1RM PR</Text>
                 <Text className="text-base font-black text-accent-orange mt-0.5">
                   {exerciseHistory.estimated1RM > 0
                     ? `${exerciseHistory.estimated1RM} ${weightUnit}`
@@ -721,7 +721,7 @@ export default function AnalyticsScreen() {
 
               {/* Best Multi-Rep Working Set */}
               <View className="flex-1 bg-dark-card border border-dark-border p-3 rounded-2xl">
-                <Text className="text-[10px] text-zinc-400 font-bold uppercase">
+                <Text className="text-xs text-zinc-400 font-bold uppercase">
                   Best Set (&gt;1 rep)
                 </Text>
                 <Text className="text-base font-black text-accent-cyan mt-0.5">
@@ -733,7 +733,7 @@ export default function AnalyticsScreen() {
 
               {/* Total Volume */}
               <View className="flex-1 bg-dark-card border border-dark-border p-3 rounded-2xl">
-                <Text className="text-[10px] text-zinc-400 font-bold uppercase">Volume</Text>
+                <Text className="text-xs text-zinc-400 font-bold uppercase">Volume</Text>
                 <Text className="text-base font-black text-accent-emerald mt-0.5">
                   {totalExerciseVolume > 0
                     ? `${totalExerciseVolume.toLocaleString()}k`
@@ -763,7 +763,7 @@ export default function AnalyticsScreen() {
                     }`}
                   >
                     <Text
-                      className={`text-[10px] font-bold ${
+                      className={`text-xs font-bold ${
                         progressMetric === '1rm' ? 'text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -780,7 +780,7 @@ export default function AnalyticsScreen() {
                     }`}
                   >
                     <Text
-                      className={`text-[10px] font-bold ${
+                      className={`text-xs font-bold ${
                         progressMetric === 'weight' ? 'text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -797,7 +797,7 @@ export default function AnalyticsScreen() {
                     }`}
                   >
                     <Text
-                      className={`text-[10px] font-bold ${
+                      className={`text-xs font-bold ${
                         progressMetric === 'volume' ? 'text-black' : 'text-zinc-400'
                       }`}
                     >
@@ -830,11 +830,11 @@ export default function AnalyticsScreen() {
                         <Text className="text-xs font-extrabold text-white">{activeItem.date}</Text>
                         {isLatest && (
                           <View className="bg-cyan-500/20 border border-cyan-400/50 px-1.5 py-0.5 rounded">
-                            <Text className="text-[9px] font-bold text-cyan-400">LATEST</Text>
+                            <Text className="text-xs font-bold text-cyan-400">LATEST</Text>
                           </View>
                         )}
                       </View>
-                      <Text className="text-[11px] text-zinc-400" numberOfLines={1}>
+                      <Text className="text-xs text-zinc-400" numberOfLines={1}>
                         Best: <Text className="text-white font-bold">{activeItem.bestSet.weightKg}{weightUnit} × {activeItem.bestSet.reps}</Text> • {activeItem.routineName}
                       </Text>
                     </View>
@@ -844,7 +844,7 @@ export default function AnalyticsScreen() {
                           ? `${activeVal.toLocaleString()} ${weightUnit}`
                           : `${activeVal} ${weightUnit}`}
                       </Text>
-                      <Text className="text-[9px] font-semibold text-zinc-500 uppercase">
+                      <Text className="text-xs font-semibold text-zinc-400 uppercase">
                         {progressMetric === '1rm' ? 'Est. 1RM' : progressMetric === 'weight' ? 'Max Weight' : 'Session Volume'}
                       </Text>
                     </View>
@@ -916,13 +916,13 @@ export default function AnalyticsScreen() {
                                 {isPR ? (
                                   <View className="bg-amber-400/20 border border-amber-400/60 px-1.5 py-0.5 rounded-full flex-row items-center space-x-0.5">
                                     <Ionicons name="trophy" size={8} color="#FBBF24" />
-                                    <Text className="text-[10px] font-black text-amber-300">
+                                    <Text className="text-xs font-black text-amber-300">
                                       {displayVal}
                                     </Text>
                                   </View>
                                 ) : (
                                   <Text
-                                    className={`text-[10px] font-bold ${
+                                    className={`text-xs font-bold ${
                                       isSelected
                                         ? 'text-cyan-300 font-black'
                                         : 'text-zinc-400'
@@ -955,7 +955,7 @@ export default function AnalyticsScreen() {
 
                               {/* Two-Line Date (Never wraps or ellipses) */}
                               <View className="items-center mt-2">
-                                <Text className="text-[9px] font-bold text-zinc-500 uppercase">
+                                <Text className="text-xs font-bold text-zinc-400 uppercase">
                                   {dateFormatted.month}
                                 </Text>
                                 <Text
@@ -976,7 +976,7 @@ export default function AnalyticsScreen() {
                     {exerciseProgression.length > 5 && (
                       <View className="flex-row items-center justify-center space-x-1 pt-2 border-t border-zinc-900 mt-1">
                         <Ionicons name="swap-horizontal" size={11} color="#71717A" />
-                        <Text className="text-[10px] text-zinc-500 font-medium">
+                        <Text className="text-xs text-zinc-400 font-medium">
                           Scroll horizontally to view all {exerciseProgression.length} recorded workouts
                         </Text>
                       </View>
@@ -985,7 +985,7 @@ export default function AnalyticsScreen() {
                 ) : (
                   <View className="py-8 items-center">
                     <Ionicons name="barbell-outline" size={28} color="#71717A" />
-                    <Text className="text-xs text-zinc-500 mt-2">
+                    <Text className="text-xs text-zinc-400 mt-2">
                       No logs recorded yet for {selectedExercise.name}.
                     </Text>
                   </View>
@@ -1007,20 +1007,20 @@ export default function AnalyticsScreen() {
                   >
                     <View className="flex-1 mr-2">
                       <Text className="text-xs font-bold text-white">{item.date}</Text>
-                      <Text className="text-[11px] text-zinc-400">{item.routineName}</Text>
+                      <Text className="text-xs text-zinc-400">{item.routineName}</Text>
                     </View>
                     <View className="items-end">
                       <Text className="text-xs font-bold text-accent-cyan">
                         Best: {item.bestSet.weightKg}kg × {item.bestSet.reps}
                       </Text>
-                      <Text className="text-[10px] text-zinc-400">
+                      <Text className="text-xs text-zinc-400">
                         {item.completedSetsCount} sets • {item.totalVolumeKg.toLocaleString()} kg
                       </Text>
                     </View>
                   </View>
                 ))
               ) : (
-                <Text className="text-xs text-zinc-500 italic text-center py-2">
+                <Text className="text-xs text-zinc-400 italic text-center py-2">
                   No completed sets yet.
                 </Text>
               )}
@@ -1047,7 +1047,7 @@ export default function AnalyticsScreen() {
                   }}
                   className="bg-accent-cyan px-2.5 py-1 rounded-lg"
                 >
-                  <Text className="text-[11px] font-extrabold text-black">+ Weigh-In</Text>
+                  <Text className="text-xs font-extrabold text-black">+ Weigh-In</Text>
                 </TouchableOpacity>
               </View>
 
@@ -1130,8 +1130,8 @@ export default function AnalyticsScreen() {
                       if (val === undefined || val === null) {
                         return (
                           <View key={m.id || idx} className="items-center flex-1 mx-1">
-                            <Text className="text-[10px] text-zinc-600">—</Text>
-                            <Text className="text-[9px] text-zinc-500 mt-auto">
+                            <Text className="text-xs text-zinc-600">—</Text>
+                            <Text className="text-xs text-zinc-400 mt-auto">
                               {m.date.slice(5)}
                             </Text>
                           </View>
@@ -1167,7 +1167,7 @@ export default function AnalyticsScreen() {
                             }}
                           >
                             <Text
-                              className="text-[9px] font-bold"
+                              className="text-xs font-bold"
                               style={{ color }}
                             >
                               {val}
@@ -1184,7 +1184,7 @@ export default function AnalyticsScreen() {
                             />
                           </View>
                           <Text
-                            className="text-[9px] text-zinc-500 mt-2 font-medium"
+                            className="text-xs text-zinc-400 mt-2 font-medium"
                             numberOfLines={1}
                           >
                             {m.date.slice(5)}
@@ -1196,7 +1196,7 @@ export default function AnalyticsScreen() {
                 ) : (
                   <View className="py-8 items-center">
                     <Ionicons name="analytics-outline" size={28} color="#71717A" />
-                    <Text className="text-xs text-zinc-500 mt-2">
+                    <Text className="text-xs text-zinc-400 mt-2">
                       No weigh-in data logged for {activeUser.displayName}.
                     </Text>
                   </View>
@@ -1249,17 +1249,17 @@ export default function AnalyticsScreen() {
                 {userMetrics.length > 0 ? (
                   <>
                     <View className="flex-row items-center justify-between pb-2 border-b border-zinc-800">
-                      <Text className="text-[11px] font-bold text-zinc-400 w-20">DATE</Text>
-                      <Text className="text-[11px] font-bold text-zinc-400 flex-1 text-center">
+                      <Text className="text-xs font-bold text-zinc-400 w-20">DATE</Text>
+                      <Text className="text-xs font-bold text-zinc-400 flex-1 text-center">
                         WEIGHT
                       </Text>
-                      <Text className="text-[11px] font-bold text-zinc-400 flex-1 text-center">
+                      <Text className="text-xs font-bold text-zinc-400 flex-1 text-center">
                         BODY FAT
                       </Text>
-                      <Text className="text-[11px] font-bold text-zinc-400 flex-1 text-center">
+                      <Text className="text-xs font-bold text-zinc-400 flex-1 text-center">
                         MUSCLE
                       </Text>
-                      <Text className="text-[11px] font-bold text-zinc-400 w-7 text-right" />
+                      <Text className="text-xs font-bold text-zinc-400 w-7 text-right" />
                     </View>
                     {[...userMetrics].reverse().map((m) => (
                       <View
@@ -1286,7 +1286,7 @@ export default function AnalyticsScreen() {
                     ))}
                   </>
                 ) : (
-                  <Text className="text-xs text-zinc-500 py-4 text-center">
+                  <Text className="text-xs text-zinc-400 py-4 text-center">
                     No weigh-in logs recorded yet. Tap "+ Weigh-In" above.
                   </Text>
                 )}
@@ -1361,23 +1361,23 @@ export default function AnalyticsScreen() {
                         {ex.name}
                       </Text>
                       <View className="flex-row items-center space-x-2 mt-1">
-                        <Text className="text-[10px] text-zinc-400">{ex.muscleGroup}</Text>
-                        <Text className="text-[10px] text-zinc-600">•</Text>
-                        <Text className="text-[10px] text-zinc-400">{ex.equipment}</Text>
+                        <Text className="text-xs text-zinc-400">{ex.muscleGroup}</Text>
+                        <Text className="text-xs text-zinc-600">•</Text>
+                        <Text className="text-xs text-zinc-400">{ex.equipment}</Text>
                       </View>
                     </View>
 
                     <View className="items-end">
                       <Text
                         className={`text-xs font-bold ${
-                          logsCount > 0 ? 'text-accent-emerald' : 'text-zinc-500'
+                          logsCount > 0 ? 'text-accent-emerald' : 'text-zinc-400'
                         }`}
                       >
                         {logsCount} {logsCount === 1 ? 'session' : 'sessions'}
                       </Text>
                       {isSelected && (
                         <View className="mt-1 bg-accent-cyan px-2 py-0.5 rounded-full">
-                          <Text className="text-[9px] font-black text-black">ACTIVE</Text>
+                          <Text className="text-xs font-black text-black">ACTIVE</Text>
                         </View>
                       )}
                     </View>
@@ -1467,7 +1467,7 @@ export default function AnalyticsScreen() {
 
             {weighInDateOption === 'custom' && (
               <View className="mb-3">
-                <Text className="text-[11px] text-zinc-400 mb-1">Enter Date (YYYY-MM-DD):</Text>
+                <Text className="text-xs text-zinc-400 mb-1">Enter Date (YYYY-MM-DD):</Text>
                 <TextInput
                   value={customWeighInDate}
                   onChangeText={setCustomWeighInDate}
@@ -1507,7 +1507,7 @@ export default function AnalyticsScreen() {
               <View className="flex-row items-center space-x-1.5">
                 {(Boolean(newBodyFat) || Boolean(newMuscleMass)) && !showAdvancedMetrics && (
                   <View className="bg-cyan-500/20 px-1.5 py-0.5 rounded border border-cyan-500/30">
-                    <Text className="text-[10px] font-bold text-cyan-400">Filled</Text>
+                    <Text className="text-xs font-bold text-cyan-400">Filled</Text>
                   </View>
                 )}
                 <Ionicons
@@ -1523,7 +1523,7 @@ export default function AnalyticsScreen() {
               <View className="bg-zinc-950/60 p-3.5 rounded-xl border border-zinc-800/80 mb-4">
                 <View className="flex-row items-center space-x-1.5 mb-2.5">
                   <Ionicons name="information-circle-outline" size={13} color="#71717A" />
-                  <Text className="text-[11px] text-zinc-400 font-medium">
+                  <Text className="text-xs text-zinc-400 font-medium">
                     Optional: from smart scale or DEXA scans
                   </Text>
                 </View>
@@ -1533,7 +1533,7 @@ export default function AnalyticsScreen() {
                   <View className="flex-1">
                     <View className="flex-row items-center space-x-1 mb-1">
                       <Ionicons name="water-outline" size={13} color="#10B981" />
-                      <Text className="text-[11px] text-accent-emerald font-bold">Body Fat (%)</Text>
+                      <Text className="text-xs text-accent-emerald font-bold">Body Fat (%)</Text>
                     </View>
                     <TextInput
                       keyboardType="numeric"
@@ -1549,7 +1549,7 @@ export default function AnalyticsScreen() {
                   <View className="flex-1">
                     <View className="flex-row items-center space-x-1 mb-1">
                       <Ionicons name="barbell-outline" size={13} color="#F59E0B" />
-                      <Text className="text-[11px] text-amber-400 font-bold">Muscle Mass ({weightUnit})</Text>
+                      <Text className="text-xs text-amber-400 font-bold">Muscle Mass ({weightUnit})</Text>
                     </View>
                     <TextInput
                       keyboardType="numeric"

@@ -1,5 +1,7 @@
+import { callSecureBackend } from './secureBackend';
+import { clearCloudQueue } from '../utils/cloudSyncQueue';
+import { eraseOwnerLocalData, freezeLocalOwner, unfreezeLocalOwner } from '../utils/storage';
 import {
-  signInAnonymously as fbSignInAnonymously,
   signInWithEmailAndPassword as fbSignInWithEmail,
   createUserWithEmailAndPassword as fbCreateUserWithEmail,
   sendPasswordResetEmail as fbSendPasswordResetEmail,
@@ -9,6 +11,8 @@ import {
   onAuthStateChanged as fbOnAuthStateChanged,
   User as FirebaseUser,
   updateProfile,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
 } from 'firebase/auth';
 import { auth, firebaseConfig } from '../config/firebase';
 import {
@@ -17,9 +21,10 @@ import {
   setActiveSession,
   clearActiveSession,
   getActiveSession,
-  UserSession,
+  getGuestOwner,
 } from '../utils/storage';
 import { UserRole, AccountType } from '../types/trainer';
+import { WeightUnit } from '../types';
 
 export interface AuthState {
   user: FirebaseUser | null;
@@ -27,347 +32,119 @@ export interface AuthState {
   isAnonymous: boolean;
 }
 
-/**
- * Sign in as anonymous guest.
- * Enables zero-friction local and offline access without requiring an initial login screen.
- */
-export async function signInAsGuest(
+// Wait for auth metadata to be persisted before exposing a new identity to the workspace.
+let transition: Promise<unknown> = Promise.resolve();
+const sessionListeners = new Set<() => void>();
+
+function changeSession<T>(action: () => Promise<T>): Promise<T> {
+  const result = transition.then(action);
+  transition = result.then(() => undefined, () => undefined);
+  void result.then(() => sessionListeners.forEach((listener) => listener()), () => {});
+  return result;
+}
+
+function guestUser(uid: string, displayName: string): FirebaseUser {
+  return { uid, displayName, email: null, isAnonymous: true } as FirebaseUser;
+}
+
+export function signInAsGuest(
   role: UserRole = 'athlete',
   accountType: AccountType = 'athlete'
 ): Promise<FirebaseUser> {
-  const guestUid = `guest_${Date.now()}`;
-  const guestEmail = 'guest@ripped.app';
-  const guestName = accountType === 'coach' || role === 'coach' ? 'Guest Coach' : 'Guest Lifter';
-
-  try {
-    if (auth && typeof auth === 'object' && auth.app && typeof fbSignInAnonymously === 'function') {
-      const cred = await fbSignInAnonymously(auth);
-      await setActiveSession({
-        uid: cred.user.uid,
-        email: cred.user.email || guestEmail,
-        displayName: cred.user.displayName || guestName,
-        userRole: role,
-        accountType,
-      });
-      return cred.user;
-    }
-  } catch (err) {
-    console.warn('[Auth] Firebase guest sign-in fallback:', err);
-  }
-
-  const mockGuestUser = {
-    uid: guestUid,
-    email: guestEmail,
-    displayName: guestName,
-    isAnonymous: true,
-  } as unknown as FirebaseUser;
-
-  await setActiveSession({
-    uid: guestUid,
-    email: guestEmail,
-    displayName: guestName,
-    userRole: role,
-    accountType,
+  return changeSession(async () => {
+    if (auth.currentUser) await fbSignOut(auth);
+    const session = await getActiveSession();
+    const uid = (session?.isLocalGuest && session.userRole === role ? session.uid : await getGuestOwner(role))
+      || `guest_local_${accountType}`;
+    const displayName = role === 'coach' ? 'Guest Coach' : 'Guest Lifter';
+    await setActiveSession({ uid, email: '', displayName, userRole: role, accountType, isLocalGuest: true });
+    return guestUser(uid, displayName);
   });
-
-  return mockGuestUser;
 }
 
-/**
- * Sign in with existing email and password
- */
-export async function signInWithEmail(
+export function signInWithEmail(
   email: string,
-  pass: string,
+  password: string,
   selectedRole?: UserRole,
   accountType?: AccountType
 ): Promise<FirebaseUser> {
-  const cleanEmail = email.trim().toLowerCase();
-  const cleanPass = pass.trim();
-
-  if (!cleanEmail || !cleanPass) {
-    throw new Error('Please enter both email and password.');
-  }
-
-  let fbUser: FirebaseUser | null = null;
-  const isFirebaseValid =
-    auth &&
-    typeof auth === 'object' &&
-    auth.app &&
-    typeof fbSignInWithEmail === 'function';
-
-  if (isFirebaseValid) {
-    try {
-      const cred = await fbSignInWithEmail(auth, cleanEmail, cleanPass);
-      if (cred && cred.user) {
-        fbUser = cred.user;
-      }
-    } catch (err: any) {
-      console.warn('[Auth] Firebase signIn failed:', err?.code, err?.message);
-      if (
-        err?.code === 'auth/wrong-password' ||
-        err?.code === 'auth/invalid-credential'
-      ) {
-        // Also check if local account matches
-        const localAccounts = await getStoredAccounts();
-        const localMatch = localAccounts.find(
-          (a) => a.email.toLowerCase() === cleanEmail
-        );
-        if (localMatch && localMatch.password === cleanPass) {
-          const resolvedRole = localMatch.userRole || selectedRole || 'athlete';
-          const resolvedAccountType = localMatch.accountType || accountType || (resolvedRole === 'coach' ? 'coach' : 'athlete');
-          await setActiveSession({
-            uid: localMatch.id,
-            email: localMatch.email,
-            displayName: localMatch.displayName,
-            userRole: resolvedRole,
-            accountType: resolvedAccountType,
-          });
-          return {
-            uid: localMatch.id,
-            email: localMatch.email,
-            displayName: localMatch.displayName,
-            isAnonymous: false,
-          } as unknown as FirebaseUser;
-        }
-        throw new Error('Invalid email or password. Please try again.');
-      }
-      if (err?.code === 'auth/invalid-email') {
-        throw new Error('Please enter a valid email address.');
-      }
-    }
-  }
-
-  // Check local account for role preference
-  const localAccounts = await getStoredAccounts();
-  const match = localAccounts.find(
-    (a) => a.email.toLowerCase() === cleanEmail
-  );
-
-  const finalRole = match?.userRole || selectedRole || 'athlete';
-  const finalAccountType = match?.accountType || accountType || (finalRole === 'coach' ? 'coach' : 'athlete');
-
-  if (fbUser) {
-    const cleanName = fbUser.displayName || cleanEmail.split('@')[0];
+  return changeSession(async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    const { user } = await fbSignInWithEmail(auth, cleanEmail, password.trim());
+    const stored = (await getStoredAccounts()).find((account) => account.id === user.uid);
+    const role = stored?.userRole || selectedRole;
     await setActiveSession({
-      uid: fbUser.uid,
+      uid: user.uid,
       email: cleanEmail,
-      displayName: cleanName,
-      userRole: finalRole,
-      accountType: finalAccountType,
+      displayName: user.displayName || cleanEmail.split('@')[0],
+      userRole: role,
+      accountType: stored?.accountType || accountType,
     });
-    return fbUser;
-  }
-
-  if (!match) {
-    throw new Error('Account not found. Please check your email or create an account.');
-  }
-
-  if (match.password && match.password !== cleanPass) {
-    throw new Error('Invalid email or password. Please try again.');
-  }
-
-  await setActiveSession({
-    uid: match.id,
-    email: match.email,
-    displayName: match.displayName,
-    userRole: finalRole,
-    accountType: finalAccountType,
+    return user;
   });
-
-  return {
-    uid: match.id,
-    email: match.email,
-    displayName: match.displayName,
-    isAnonymous: false,
-  } as unknown as FirebaseUser;
 }
 
-/**
- * Create new account with email and password
- */
-export async function registerWithEmail(
+export function registerWithEmail(
   email: string,
-  pass: string,
+  password: string,
   displayName?: string,
   role: UserRole = 'athlete',
-  accountType: AccountType = 'athlete'
+  accountType: AccountType = 'athlete',
+  weightUnit?: WeightUnit,
+  trainerCode?: string
 ): Promise<FirebaseUser> {
-  const cleanEmail = email.trim().toLowerCase();
-  const cleanPass = pass.trim();
-  const cleanName = (displayName || cleanEmail.split('@')[0]).trim();
-
-  if (!cleanEmail || !cleanPass) {
-    throw new Error('Please enter both email and password.');
-  }
-  if (cleanPass.length < 6) {
-    throw new Error('Password must be at least 6 characters.');
-  }
-
-  let fbUser: FirebaseUser | null = null;
-  const isFirebaseValid =
-    auth &&
-    typeof auth === 'object' &&
-    auth.app &&
-    typeof fbCreateUserWithEmail === 'function';
-
-  if (isFirebaseValid) {
-    try {
-      const cred = await fbCreateUserWithEmail(auth, cleanEmail, cleanPass);
-      if (cred && cred.user) {
-        fbUser = cred.user;
-        await updateProfile(cred.user, { displayName: cleanName });
-        // Automatically send email verification link upon registration
-        try {
-          await fbSendEmailVerification(cred.user);
-        } catch (vErr) {
-          console.warn('[Auth] Initial email verification send error:', vErr);
-        }
-      }
-    } catch (err: any) {
-      console.warn('[Auth] Firebase createUser failed:', err?.code, err?.message);
-      if (err?.code === 'auth/email-already-in-use') {
-        throw new Error('An account with this email already exists. Please log in.');
-      }
-      if (err?.code === 'auth/weak-password') {
-        throw new Error('Password should be at least 6 characters.');
-      }
-    }
-  }
-
-  const localAccounts = await getStoredAccounts();
-  const alreadyExists = localAccounts.some(
-    (a) => a.email.toLowerCase() === cleanEmail
-  );
-  if (alreadyExists && !fbUser) {
-    throw new Error('An account with this email already exists. Please log in.');
-  }
-
-  const uid = fbUser?.uid || `user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-  await saveStoredAccount({
-    id: uid,
-    email: cleanEmail,
-    displayName: cleanName,
-    password: cleanPass,
-    userRole: role,
-    accountType,
-    createdAt: Date.now(),
-  });
-
-  await setActiveSession({
-    uid,
-    email: cleanEmail,
-    displayName: cleanName,
-    userRole: role,
-    accountType,
-  });
-
-  if (fbUser) {
-    return fbUser;
-  }
-
-  return {
-    uid,
-    email: cleanEmail,
-    displayName: cleanName,
-    isAnonymous: false,
-  } as unknown as FirebaseUser;
-}
-
-/**
- * Sign out from Firebase and clear active session
- */
-export async function signOutUser(): Promise<void> {
-  try {
-    if (auth && typeof auth === 'object' && auth.app && typeof fbSignOut === 'function') {
-      await fbSignOut(auth).catch(() => {});
-    }
-  } catch (err) {
-    console.warn('[Auth] Error signing out of Firebase:', err);
-  }
-  await clearActiveSession();
-}
-
-/**
- * Subscribe to Auth State changes
- */
-export function subscribeToAuth(
-  callback: (user: FirebaseUser | null) => void
-): () => void {
-  try {
-    if (!auth || typeof auth !== 'object' || !auth.app || typeof fbOnAuthStateChanged !== 'function') {
-      getActiveSession().then((session) => {
-        if (session) {
-          callback({
-            uid: session.uid,
-            email: session.email,
-            displayName: session.displayName,
-            isAnonymous: false,
-          } as unknown as FirebaseUser);
-        } else {
-          callback(null);
-        }
-      });
-      return () => {};
-    }
-
-    return fbOnAuthStateChanged(
-      auth,
-      async (user) => {
-        if (user) {
-          await setActiveSession({
-            uid: user.uid,
-            email: user.email || '',
-            displayName: user.displayName || user.email?.split('@')[0] || 'Lifter',
-          });
-          callback(user);
-        } else {
-          const session = await getActiveSession();
-          if (session) {
-            callback({
-              uid: session.uid,
-              email: session.email,
-              displayName: session.displayName,
-              isAnonymous: false,
-            } as unknown as FirebaseUser);
-          } else {
-            callback(null);
-          }
-        }
-      },
-      (err) => {
-        console.warn('[Auth] onAuthStateChanged error:', err);
-        getActiveSession().then((session) => {
-          if (session) {
-            callback({
-              uid: session.uid,
-              email: session.email,
-              displayName: session.displayName,
-              isAnonymous: false,
-            } as unknown as FirebaseUser);
-          } else {
-            callback(null);
-          }
-        });
-      }
-    );
-  } catch (err) {
-    console.warn('[Auth] Error subscribing to auth state:', err);
-    getActiveSession().then((session) => {
-      if (session) {
-        callback({
-          uid: session.uid,
-          email: session.email,
-          displayName: session.displayName,
-          isAnonymous: false,
-        } as unknown as FirebaseUser);
-      } else {
-        callback(null);
-      }
+  return changeSession(async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = displayName?.trim() || cleanEmail.split('@')[0];
+    const { user } = await fbCreateUserWithEmail(auth, cleanEmail, password.trim());
+    await setActiveSession({
+      uid: user.uid, email: cleanEmail, displayName: cleanName, userRole: role, accountType, weightUnit, trainerCode,
     });
-    return () => {};
+    await saveStoredAccount({
+      id: user.uid, email: cleanEmail, displayName: cleanName, userRole: role, accountType, createdAt: Date.now(),
+    });
+    // Profile and verification email can be retried after the account itself has been created.
+    void updateProfile(user, { displayName: cleanName })
+      .catch(() => {})
+      .then(() => fbSendEmailVerification(user))
+      .catch(() => {});
+    return user;
+  });
+}
+
+export function signOutUser(): Promise<void> {
+  return changeSession(async () => {
+    if (auth.currentUser) await fbSignOut(auth);
+    await clearActiveSession();
+  });
+}
+
+export function subscribeToAuth(callback: (user: FirebaseUser | null) => void): () => void {
+  let revision = 0;
+  let disposed = false;
+  const emit = async () => {
+    const currentRevision = ++revision;
+    await transition;
+    const session = await getActiveSession();
+    if (disposed || currentRevision !== revision) return;
+    const user = auth?.currentUser;
+    if (user) callback(user);
+    else if (session?.isLocalGuest || session?.uid.startsWith('guest_')) {
+      callback(guestUser(session.uid, session.displayName));
+    } else callback(null);
+  };
+  sessionListeners.add(emit);
+  let unsubscribe: (() => void) | undefined;
+  try {
+    unsubscribe = fbOnAuthStateChanged(auth, emit, emit);
+  } catch {
+    void emit();
   }
+  return () => {
+    disposed = true;
+    sessionListeners.delete(emit);
+    unsubscribe?.();
+  };
 }
 
 /**
@@ -506,3 +283,20 @@ export async function reloadCurrentUser(): Promise<FirebaseUser | null> {
 }
 
 
+
+export function deleteCurrentAccount(password:string):Promise<void>{
+  return changeSession(async()=>{
+    const user=auth.currentUser;
+    if(!user?.email || user.isAnonymous)throw new Error('Sign in to the account you want to delete.');
+    const owner=user.uid;
+    await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,password));
+    if(auth.currentUser?.uid!==owner)throw new Error('Your account changed.');
+    freezeLocalOwner(owner);
+    try{
+      const result=await callSecureBackend<{success:boolean}>('deleteMyAccount');
+      if(!result.success)throw new Error('Deletion has not completed. Please retry.');
+    }catch(error){unfreezeLocalOwner(owner);throw error;}
+    try{await clearCloudQueue(owner);await eraseOwnerLocalData(owner);}
+    finally{await fbSignOut(auth);await clearActiveSession();}
+  });
+}

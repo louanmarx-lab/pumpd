@@ -33,6 +33,7 @@ import {
   leaveJamRoomCloud,
   syncJamRoomExercisesCloud,
   peekJamRoomCloud,
+  normalizeJamRoomPin,
 } from '../services/gymJamService';
 
 const JAM_STORAGE_KEY = '@ripped_active_jam_session';
@@ -432,28 +433,19 @@ export function useGymJam({
       try {
         disconnect();
 
-        // 2-digit clean code e.g. RIP-42
-        const pinNumber = Math.floor(10 + Math.random() * 90);
-        const pin = `RIP-${pinNumber}`;
-
+        setConnectionStatus('connecting');
+        const room = await createJamRoomCloud('', {
+          userId: currentUserId, displayName: currentUserName, role: userRole,
+        }, initialSyncData);
+        const pin = room.roomPin;
         setRoomPin(pin);
         setRole('host');
         roleRef.current = 'host';
-        setConnectionStatus('connecting');
-
-        await createJamRoomCloud(
-          pin,
-          {
-            userId: currentUserId,
-            displayName: currentUserName,
-            role: userRole,
-          },
-          initialSyncData
-        );
 
         // Subscribe to real-time room events
         const unsub = subscribeToJamRoomCloud(pin, handleRoomSnapshot, (err) => {
           console.warn('[GymJam] Error listening to hosted room:', err);
+          setConnectionStatus('error');
         });
         unsubscribeRoomRef.current = unsub;
 
@@ -483,12 +475,7 @@ export function useGymJam({
         disconnect();
 
         const clean = rawPin.trim().toUpperCase();
-        // Support either raw number "42", "RIP-42", or legacy "PUMP-42"
-        const normalizedPin = clean.startsWith('RIP-')
-          ? clean
-          : clean.startsWith('PUMP-')
-          ? clean
-          : `RIP-${clean.replace(/\D/g, '')}`;
+        const normalizedPin = normalizeJamRoomPin(clean);
 
         setRoomPin(normalizedPin);
         setRole('guest');
@@ -701,7 +688,7 @@ export function useGymJam({
 
     const isHost = roleRef.current === 'host' || role === 'host';
     if (roomPin) {
-      leaveJamRoomCloud(roomPin, currentUserId, isHost);
+      void leaveJamRoomCloud(roomPin,currentUserId,isHost).catch(error=>console.warn('Could not close online workout:',error));
     }
 
     setConnectionStatus('disconnected');

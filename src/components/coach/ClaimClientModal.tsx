@@ -1,3 +1,7 @@
+import { useUserWorkspace } from '../../context/UserWorkspaceContext';
+import { publishClientClaimCloud } from '../../services/clientClaimService';
+import { saveClientsCloud } from '../../services/firestoreService';
+import { callSecureBackend } from '../../services/secureBackend';
 import React, { useState, useEffect } from 'react';
 import {
   Modal,
@@ -30,20 +34,24 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
   onGenerateToken,
 }) => {
   const [token, setToken] = useState<ClientClaimToken | null>(null);
+  const {currentUser,clients}=useUserWorkspace();
+  const [published,setPublished]=useState('');
+  const [publishing,setPublishing]=useState(false);
+  const [publishError,setPublishError]=useState('');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (visible && client) {
       const generated = onGenerateToken(client.id);
       setToken(generated || client.claimToken || null);
-      setCopied(false);
+      setCopied(false);setPublished('');setPublishError('');
     }
   }, [visible, client?.id]);
 
   if (!client) return null;
 
   const handleCopyCode = async () => {
-    if (!token) return;
+    if (!token || published!==token.code) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
       try {
@@ -62,7 +70,7 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
   };
 
   const handleShareInvite = async () => {
-    if (!token) return;
+    if (!token || published!==token.code) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const message = [
@@ -74,7 +82,7 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
       `2. Choose "Client (Free VIP Pass)" on sign up`,
       `3. Enter Invite PIN: ${token.code}`,
       ``,
-      `All past logs and workouts entered by ${coachName} will automatically sync to your device!`,
+      `Training history can transfer securely after you accept the invitation.`,
     ].join('\n');
 
     try {
@@ -98,7 +106,7 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
   const handleRegenerate = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const generated = onGenerateToken(client.id, true);
-    setToken(generated);
+    setPublished('');setPublishError('');setToken(generated);
   };
 
   return (
@@ -150,7 +158,7 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
 
             {/* QR Code Container */}
             <View className="items-center justify-center bg-zinc-950 border border-zinc-800 rounded-3xl p-5 mb-4 shadow-inner">
-              {token ? (
+              {token && published===token.code ? (
                 <View className="items-center">
                   <QRCodeView value={token.qrPayload || token.code} size={180} />
                   <Text className="text-[10px] text-zinc-500 font-semibold uppercase tracking-wider mt-3">
@@ -163,15 +171,15 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
               <View className="w-full bg-zinc-900 border border-zinc-750 rounded-2xl p-3.5 mt-4 flex-row items-center justify-between">
                 <View>
                   <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
-                    6-Character Claim PIN
+                    Private trainer invitation
                   </Text>
-                  <Text className="text-2xl font-black text-accent-cyan tracking-widest mt-0.5">
-                    {token?.code || 'Generating...'}
+                  <Text className="text-sm font-black text-accent-cyan flex-shrink mt-0.5">
+                    {published===token?.code?token?.code:'Not activated'}
                   </Text>
                 </View>
 
                 <TouchableOpacity
-                  onPress={handleCopyCode}
+                  disabled={!token||published!==token.code} onPress={handleCopyCode}
                   className="bg-cyan-500/20 border border-cyan-500/50 px-3.5 py-2 rounded-xl flex-row items-center space-x-1.5"
                 >
                   <Ionicons
@@ -186,6 +194,11 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
               </View>
             </View>
 
+            <TouchableOpacity accessibilityRole="button" disabled={publishing||!token} className="min-h-[48px] bg-cyan-500 rounded-xl items-center justify-center p-3 mb-3" onPress={async()=>{
+              if(!token)return;setPublishing(true);setPublishError('');const code=token.code;
+              try{await saveClientsCloud(currentUser.id,clients);await callSecureBackend('registerShadowClient',{clientId:client.id});await publishClientClaimCloud(token,client,currentUser.id,coachName);setPublished(code);}catch(error){setPublishError((error as Error).message);}finally{setPublishing(false);}
+            }}><Text className="font-bold text-black">{publishing?'Activating…':published===token?.code?'Invitation active':'Activate secure invitation'}</Text></TouchableOpacity>
+            {!!publishError&&<Text accessibilityRole="alert" className="text-sm text-rose-300 mb-3">{publishError}</Text>}
             {/* Migration & Feature Guarantees */}
             <View className="bg-zinc-900/80 border border-zinc-850 rounded-2xl p-4 mb-4 space-y-2.5">
               <Text className="text-xs font-black text-zinc-300 uppercase tracking-wider mb-1">
@@ -194,7 +207,7 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
               <View className="flex-row items-start space-x-2">
                 <Ionicons name="cloud-done" size={15} color="#10B981" style={{ marginTop: 1 }} />
                 <Text className="text-xs text-zinc-300 flex-1 leading-relaxed">
-                  <Text className="font-bold text-white">Full History Transfers:</Text> All workout logs, PR records, and coach notes logged by you transfer immediately to their phone.
+                  <Text className="font-bold text-white">Full History Transfers:</Text> Training records transfer securely after your athlete accepts. Existing athlete records are preserved.
                 </Text>
               </View>
               <View className="flex-row items-start space-x-2">
@@ -214,7 +227,7 @@ export const ClaimClientModal: React.FC<ClaimClientModalProps> = ({
             {/* Actions */}
             <View className="space-y-2.5 mb-4">
               <TouchableOpacity
-                onPress={handleShareInvite}
+                disabled={!token||published!==token.code} onPress={handleShareInvite}
                 className="w-full bg-accent-cyan py-3.5 rounded-xl flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/20"
               >
                 <Ionicons name="share-social" size={17} color="#09090B" />

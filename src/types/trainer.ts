@@ -136,16 +136,16 @@ export const TIER_CONFIGS: Record<TrainerSubscriptionTier, TierConfig> = {
   },
   studio: {
     id: 'studio',
-    name: 'Custom',
-    subtitle: 'Need more than 30 seats?',
+    name: 'Studio',
+    subtitle: 'For larger teams',
     seatLimit: 50, // overridden dynamically by upgradeTrainerSubscription
     priceZar: 1299, // overridden dynamically: 699 + (seats - 30) * 30
     productIdIos: 'com.ripped.pt.studio.monthly',
     productIdAndroid: 'ripped_pt_studio_monthly',
     features: [
-      'Choose exactly how many seats you need',
-      'R699 base + R30 per client above 30',
-      'e.g. 50 seats = R1 299/mo',
+      'Up to 50 active clients',
+      'Monthly store subscription',
+      'Price shown by your app store',
       'Full suite access & priority support',
     ],
   },

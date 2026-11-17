@@ -67,14 +67,15 @@ export const ClientRosterView: React.FC = () => {
   // Add / Edit Client Modal
   const [showClientModal, setShowClientModal] = useState(false);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const [clientName, setClientName] = useState('');
   const [clientEmail, setClientEmail] = useState('');
   const [clientEmoji, setClientEmoji] = useState('⚡');
   const [clientNotes, setClientNotes] = useState('');
-  const [clientCalories, setClientCalories] = useState('2500');
-  const [clientProtein, setClientProtein] = useState('180');
-  const [clientCarbs, setClientCarbs] = useState('260');
-  const [clientFats, setClientFats] = useState('75');
+  const [clientCalories, setClientCalories] = useState('2400');
+  const [clientProtein, setClientProtein] = useState('160');
+  const [clientCarbs, setClientCarbs] = useState('240');
+  const [clientFats, setClientFats] = useState('70');
   const [selectedRoutineIds, setSelectedRoutineIds] = useState<string[]>([]);
 
   // Prescribed Archetypes Modal
@@ -144,11 +145,12 @@ export const ClientRosterView: React.FC = () => {
     setClientEmail('');
     setClientEmoji('⚡');
     setClientNotes('');
-    setClientCalories('2500');
-    setClientProtein('180');
-    setClientCarbs('260');
-    setClientFats('75');
+    setClientCalories('2400');
+    setClientProtein('160');
+    setClientCarbs('240');
+    setClientFats('70');
     setSelectedRoutineIds([]);
+    setShowAdvancedOptions(false);
     setShowClientModal(true);
   };
 
@@ -164,6 +166,7 @@ export const ClientRosterView: React.FC = () => {
     setClientCarbs(client.macroTargets.carbs.toString());
     setClientFats(client.macroTargets.fats.toString());
     setSelectedRoutineIds(client.assignedRoutineIds || []);
+    setShowAdvancedOptions(true);
     setShowClientModal(true);
   };
 
@@ -184,6 +187,8 @@ export const ClientRosterView: React.FC = () => {
       fats: parseInt(clientFats, 10) || 70,
     };
 
+    const finalAvatarEmoji = clientEmoji.trim() || '⚡';
+
     if (editingClientId) {
       const existing = clients.find((c) => c.id === editingClientId);
       if (existing) {
@@ -191,7 +196,7 @@ export const ClientRosterView: React.FC = () => {
           ...existing,
           name: clientName.trim(),
           email: clientEmail.trim() || undefined,
-          avatarEmoji: clientEmoji,
+          avatarEmoji: finalAvatarEmoji,
           notes: clientNotes.trim() || undefined,
           macroTargets,
           assignedRoutineIds: selectedRoutineIds,
@@ -202,7 +207,7 @@ export const ClientRosterView: React.FC = () => {
       addClient({
         name: clientName.trim(),
         email: clientEmail.trim() || undefined,
-        avatarEmoji: clientEmoji,
+        avatarEmoji: finalAvatarEmoji,
         notes: clientNotes.trim() || undefined,
         type: 'shadow',
         status: 'active',
@@ -476,7 +481,7 @@ export const ClientRosterView: React.FC = () => {
             </View>
             <View>
               <Text className="text-xs font-black text-white">
-                {currentTierConfig.name} • R{currentTierConfig.priceZar}/mo
+                {currentTierConfig.name} • Store subscription
               </Text>
               <Text className="text-[10px] text-zinc-400">
                 {activeSeatsUsed} of {trainerSubscription.seatLimit} active seats occupied
@@ -515,6 +520,8 @@ export const ClientRosterView: React.FC = () => {
       <TouchableOpacity
         activeOpacity={0.8}
         onPress={handleOpenMyProfile}
+        accessibilityRole="button"
+        accessibilityLabel="Open coach personal athlete profile"
         className="bg-dark-card border border-cyan-500/30 rounded-2xl p-4 mb-4 shadow-md"
       >
         <View className="flex-row items-center space-x-3 mb-3">
@@ -551,6 +558,8 @@ export const ClientRosterView: React.FC = () => {
 
         <TouchableOpacity
           onPress={openAddClient}
+          accessibilityRole="button"
+          accessibilityLabel="Add client"
           className="bg-accent-cyan px-3.5 py-1.5 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20"
         >
           <Ionicons name="person-add" size={14} color="#09090B" />
@@ -567,46 +576,68 @@ export const ClientRosterView: React.FC = () => {
             onChangeText={setClientSearch}
             placeholder="Search clients by name, email, or routine..."
             placeholderTextColor="#71717A"
+            accessibilityLabel="Search clients"
             className="flex-1 text-white text-xs font-medium"
           />
           {clientSearch.length > 0 && (
-            <TouchableOpacity onPress={() => setClientSearch('')}>
+            <TouchableOpacity
+              onPress={() => setClientSearch('')}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search input"
+            >
               <Ionicons name="close-circle" size={16} color="#71717A" />
             </TouchableOpacity>
           )}
         </View>
       )}
 
-      {/* Roster Cards */}
+      {/* Roster Cards - Add client first in empty state */}
       {displayedClients.length === 0 ? (
-        <View className="bg-dark-card border border-dashed border-zinc-800 rounded-2xl p-8 items-center justify-center my-4">
-          <Ionicons
-            name={clientSearch ? 'search-outline' : 'people-outline'}
-            size={36}
-            color="#71717A"
-          />
-          <Text className="text-sm font-bold text-white mt-2">
-            {clientSearch ? 'No Clients Found' : 'No Athletes in Roster'}
-          </Text>
-          <Text className="text-xs text-zinc-400 text-center mt-1">
-            {clientSearch
-              ? `No clients match "${clientSearch}". Try another name or clear your search.`
-              : 'Add your clients to track workouts, assign splits, and view their Athlete Profile.'}
-          </Text>
-          {clientSearch ? (
-            <TouchableOpacity
-              onPress={() => setClientSearch('')}
-              className="mt-4 bg-zinc-800 px-4 py-2 rounded-xl"
-            >
-              <Text className="text-xs font-bold text-zinc-200">Clear Search</Text>
-            </TouchableOpacity>
+        <View className="bg-dark-card border border-dashed border-zinc-800 rounded-3xl p-6 items-center justify-center my-4 shadow-md">
+          {!clientSearch ? (
+            <>
+              {/* Add Client First */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={openAddClient}
+                accessibilityRole="button"
+                accessibilityLabel="Add first client"
+                className="w-full bg-accent-cyan py-3.5 px-4 rounded-2xl flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/25 mb-5"
+              >
+                <Ionicons name="person-add" size={18} color="#09090B" />
+                <Text className="text-black font-black text-sm tracking-wide">+ Add Client</Text>
+              </TouchableOpacity>
+
+              <View className="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 items-center justify-center mb-2">
+                <Ionicons name="people-outline" size={26} color="#71717A" />
+              </View>
+              <Text className="text-sm font-black text-white text-center">
+                No Athletes in Roster
+              </Text>
+              <Text className="text-xs text-zinc-400 text-center mt-1 px-4 leading-relaxed">
+                Add your clients to track workouts, assign splits, and view their Athlete Profile.
+              </Text>
+            </>
           ) : (
-            <TouchableOpacity
-              onPress={openAddClient}
-              className="mt-4 bg-accent-cyan px-4 py-2 rounded-xl"
-            >
-              <Text className="text-xs font-black text-black">+ Add First Client</Text>
-            </TouchableOpacity>
+            <>
+              <Ionicons
+                name="search-outline"
+                size={36}
+                color="#71717A"
+              />
+              <Text className="text-sm font-bold text-white mt-2">No Clients Found</Text>
+              <Text className="text-xs text-zinc-400 text-center mt-1">
+                No clients match "{clientSearch}". Try another name or clear your search.
+              </Text>
+              <TouchableOpacity
+                onPress={() => setClientSearch('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                className="mt-4 bg-zinc-800 px-4 py-2 rounded-xl"
+              >
+                <Text className="text-xs font-bold text-zinc-200">Clear Search</Text>
+              </TouchableOpacity>
+            </>
           )}
         </View>
       ) : (
@@ -625,6 +656,8 @@ export const ClientRosterView: React.FC = () => {
                 <TouchableOpacity
                   activeOpacity={0.7}
                   onPress={() => handleEnterAthleteMode(client)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`View athlete profile for ${client.name}`}
                   className="flex-row items-center space-x-3 flex-1 min-w-0 mr-2"
                 >
                   <View className="w-12 h-12 rounded-2xl bg-zinc-900 border border-zinc-800 items-center justify-center shrink-0 shadow-sm">
@@ -648,8 +681,9 @@ export const ClientRosterView: React.FC = () => {
                   {client.type === 'linked' && (
                     <TouchableOpacity
                       onPress={() => handleUnlinkClient(client.id, client.name)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Unlink ${client.name} account`}
                       className="p-2 bg-amber-500/10 border border-amber-500/30 rounded-xl"
-                      accessibilityLabel="Unlink athlete account"
                     >
                       <Ionicons name="link-outline" size={14} color="#F59E0B" />
                     </TouchableOpacity>
@@ -657,6 +691,8 @@ export const ClientRosterView: React.FC = () => {
 
                   <TouchableOpacity
                     onPress={() => openEditClient(client)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit ${client.name}`}
                     className="p-2 bg-zinc-900 border border-zinc-800 rounded-xl"
                   >
                     <Ionicons name="create-outline" size={14} color="#71717A" />
@@ -664,6 +700,8 @@ export const ClientRosterView: React.FC = () => {
 
                   <TouchableOpacity
                     onPress={() => handleDeleteClient(client.id, client.name)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete ${client.name}`}
                     className="p-2 bg-rose-500/10 border border-rose-500/20 rounded-xl"
                   >
                     <Ionicons name="trash-outline" size={14} color="#F43F5E" />
@@ -746,6 +784,8 @@ export const ClientRosterView: React.FC = () => {
               <TouchableOpacity
                 activeOpacity={0.75}
                 onPress={() => handleEnterAthleteMode(client)}
+                accessibilityRole="button"
+                accessibilityLabel={`Program for ${client.name}, tap to manage`}
                 className="mt-2.5 bg-zinc-950/60 border border-zinc-850 rounded-xl px-3 py-2.5 flex-row items-center justify-between"
               >
                 {client.assignedRoutineNames && client.assignedRoutineNames.length > 0 ? (
@@ -779,6 +819,8 @@ export const ClientRosterView: React.FC = () => {
                 {/* Primary: Manage as Athlete */}
                 <TouchableOpacity
                   onPress={() => handleEnterAthleteMode(client)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Manage ${client.name} as athlete`}
                   className="flex-1 bg-amber-400 py-3 rounded-2xl flex-row items-center justify-center space-x-1.5 shadow-md shadow-amber-400/25 min-w-0"
                 >
                   <Ionicons name="barbell" size={15} color="#09090B" />
@@ -788,6 +830,8 @@ export const ClientRosterView: React.FC = () => {
                 {/* Send Invite Code — shown for ALL clients */}
                 <TouchableOpacity
                   onPress={() => setClaimClientTarget(client)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Send claim code to ${client.name}`}
                   className="bg-zinc-900 border border-cyan-500/40 px-3 py-3 rounded-2xl flex-row items-center space-x-1.5 shrink-0"
                 >
                   <Ionicons name="qr-code-outline" size={14} color="#06B6D4" />
@@ -808,36 +852,23 @@ export const ClientRosterView: React.FC = () => {
               <Text className="text-lg font-black text-white">
                 {editingClientId ? 'Edit Athlete' : 'Add New Athlete'}
               </Text>
-              <TouchableOpacity onPress={() => setShowClientModal(false)}>
+              <TouchableOpacity
+                onPress={() => setShowClientModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close athlete modal"
+              >
                 <Ionicons name="close" size={24} color="#A1A1AA" />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              {/* Emoji Picker */}
-              <Text className="text-xs font-bold text-zinc-400 mb-1.5">Avatar Icon</Text>
-              <View className="flex-row space-x-2 mb-4">
-                {EMOJI_OPTIONS.map((emoji) => (
-                  <TouchableOpacity
-                    key={emoji}
-                    onPress={() => setClientEmoji(emoji)}
-                    className={`w-9 h-9 rounded-xl items-center justify-center border ${
-                      clientEmoji === emoji
-                        ? 'bg-accent-cyan/20 border-accent-cyan'
-                        : 'bg-zinc-900 border-zinc-800'
-                    }`}
-                  >
-                    <Text className="text-lg">{emoji}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
               <Text className="text-xs font-bold text-zinc-400 mb-1">Athlete Name *</Text>
               <TextInput
                 value={clientName}
                 onChangeText={setClientName}
                 placeholder="e.g., Sarah Davis"
                 placeholderTextColor="#71717A"
+                accessibilityLabel="Athlete name"
                 className="bg-zinc-900 border border-zinc-800 text-white px-3.5 py-2.5 rounded-xl font-bold mb-3 text-sm"
               />
 
@@ -849,6 +880,7 @@ export const ClientRosterView: React.FC = () => {
                 placeholderTextColor="#71717A"
                 keyboardType="email-address"
                 autoCapitalize="none"
+                accessibilityLabel="Athlete email"
                 className="bg-zinc-900 border border-zinc-800 text-white px-3.5 py-2.5 rounded-xl font-medium mb-3 text-sm"
               />
 
@@ -860,55 +892,15 @@ export const ClientRosterView: React.FC = () => {
                 placeholderTextColor="#71717A"
                 multiline
                 numberOfLines={2}
+                accessibilityLabel="Coaching notes"
                 className="bg-zinc-900 border border-zinc-800 text-white px-3.5 py-2.5 rounded-xl font-medium mb-3 text-sm"
               />
 
-              {/* Macro Targets */}
-              <Text className="text-xs font-bold text-zinc-400 mb-1">Prescribed Macros (Daily)</Text>
-              <View className="flex-row space-x-2 mb-4">
-                <View className="flex-1">
-                  <Text className="text-[10px] text-zinc-500 font-bold mb-0.5">Calories</Text>
-                  <TextInput
-                    value={clientCalories}
-                    onChangeText={setClientCalories}
-                    keyboardType="numeric"
-                    className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
-                  />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-[10px] text-emerald-400 font-bold mb-0.5">Protein (g)</Text>
-                  <TextInput
-                    value={clientProtein}
-                    onChangeText={setClientProtein}
-                    keyboardType="numeric"
-                    className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
-                  />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-[10px] text-cyan-400 font-bold mb-0.5">Carbs (g)</Text>
-                  <TextInput
-                    value={clientCarbs}
-                    onChangeText={setClientCarbs}
-                    keyboardType="numeric"
-                    className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
-                  />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-[10px] text-amber-400 font-bold mb-0.5">Fats (g)</Text>
-                  <TextInput
-                    value={clientFats}
-                    onChangeText={setClientFats}
-                    keyboardType="numeric"
-                    className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
-                  />
-                </View>
-              </View>
-
               {/* Assign Routines */}
-              <Text className="text-xs font-bold text-zinc-400 mb-1.5">Assign Workouts to Athlete</Text>
+              <Text className="text-xs font-bold text-zinc-400 mb-1.5">Assign Workouts to Athlete (Optional)</Text>
               {allRoutines.length === 0 ? (
                 <Text className="text-xs text-zinc-500 italic mb-4">
-                  No routines found. Create workout splits in the Workouts tab first.
+                  You can create a program in Programs and assign it later.
                 </Text>
               ) : (
                 <View className="space-y-1 mb-4">
@@ -924,6 +916,8 @@ export const ClientRosterView: React.FC = () => {
                             setSelectedRoutineIds([...selectedRoutineIds, r.id]);
                           }
                         }}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${isSelected ? 'Remove' : 'Assign'} routine ${r.name}`}
                         className={`p-2.5 rounded-xl border flex-row items-center justify-between ${
                           isSelected
                             ? 'bg-cyan-500/10 border-accent-cyan'
@@ -945,8 +939,119 @@ export const ClientRosterView: React.FC = () => {
                 </View>
               )}
 
+              {/* Expandable Options: Avatar & Macro Targets with Defaults */}
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => setShowAdvancedOptions(!showAdvancedOptions)}
+                accessibilityRole="button"
+                accessibilityLabel="Toggle optional avatar and macro target options"
+                className="bg-zinc-900 border border-zinc-800 rounded-2xl p-3.5 mb-4 flex-row items-center justify-between"
+              >
+                <View className="flex-row items-center space-x-2.5 flex-1 min-w-0 mr-2">
+                  <View className="w-8 h-8 rounded-xl bg-zinc-800 items-center justify-center shrink-0">
+                    <Text className="text-base">{clientEmoji || '⚡'}</Text>
+                  </View>
+                  <View className="flex-1 min-w-0">
+                    <Text className="text-xs font-bold text-white">
+                      Optional: Avatar & Macros
+                    </Text>
+                    <Text className="text-[10px] text-zinc-400" numberOfLines={1}>
+                      {showAdvancedOptions
+                        ? 'Tap to collapse options'
+                        : `Default: ${clientEmoji || '⚡'} • ${clientCalories || '2400'} kcal (${clientProtein || '160'}P / ${clientCarbs || '240'}C / ${clientFats || '70'}F)`}
+                    </Text>
+                  </View>
+                </View>
+                <Ionicons
+                  name={showAdvancedOptions ? 'chevron-up' : 'chevron-down'}
+                  size={16}
+                  color="#06B6D4"
+                />
+              </TouchableOpacity>
+
+              {showAdvancedOptions && (
+                <View className="bg-zinc-950/70 border border-zinc-800 rounded-2xl p-3.5 mb-4">
+                  {/* Emoji Picker */}
+                  <Text className="text-xs font-bold text-zinc-400 mb-1.5">Avatar Icon (Default: ⚡)</Text>
+                  <View className="flex-row flex-wrap gap-1.5 mb-4">
+                    {EMOJI_OPTIONS.map((emoji) => (
+                      <TouchableOpacity
+                        key={emoji}
+                        onPress={() => setClientEmoji(emoji)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Select avatar ${emoji}`}
+                        className={`w-9 h-9 rounded-xl items-center justify-center border ${
+                          clientEmoji === emoji
+                            ? 'bg-accent-cyan/20 border-accent-cyan'
+                            : 'bg-zinc-900 border-zinc-800'
+                        }`}
+                      >
+                        <Text className="text-lg">{emoji}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  {/* Macro Targets */}
+                  <Text className="text-xs font-bold text-zinc-400 mb-1">
+                    Prescribed Macros (Defaults: 2400 kcal, 160P, 240C, 70F)
+                  </Text>
+                  <View className="flex-row space-x-2">
+                    <View className="flex-1">
+                      <Text className="text-[10px] text-zinc-500 font-bold mb-0.5">Calories</Text>
+                      <TextInput
+                        value={clientCalories}
+                        onChangeText={setClientCalories}
+                        keyboardType="numeric"
+                        placeholder="2400"
+                        placeholderTextColor="#71717A"
+                        accessibilityLabel="Client calorie target"
+                        className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
+                      />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-[10px] text-emerald-400 font-bold mb-0.5">Protein (g)</Text>
+                      <TextInput
+                        value={clientProtein}
+                        onChangeText={setClientProtein}
+                        keyboardType="numeric"
+                        placeholder="160"
+                        placeholderTextColor="#71717A"
+                        accessibilityLabel="Client protein target"
+                        className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
+                      />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-[10px] text-cyan-400 font-bold mb-0.5">Carbs (g)</Text>
+                      <TextInput
+                        value={clientCarbs}
+                        onChangeText={setClientCarbs}
+                        keyboardType="numeric"
+                        placeholder="240"
+                        placeholderTextColor="#71717A"
+                        accessibilityLabel="Client carbs target"
+                        className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
+                      />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-[10px] text-amber-400 font-bold mb-0.5">Fats (g)</Text>
+                      <TextInput
+                        value={clientFats}
+                        onChangeText={setClientFats}
+                        keyboardType="numeric"
+                        placeholder="70"
+                        placeholderTextColor="#71717A"
+                        accessibilityLabel="Client fats target"
+                        className="bg-zinc-900 border border-zinc-800 text-white p-2 rounded-xl text-xs font-bold text-center"
+                      />
+                    </View>
+                  </View>
+                </View>
+              )}
+
               <TouchableOpacity
                 onPress={handleSaveClient}
+                accessibilityRole="button"
+                accessibilityLabel={editingClientId ? 'Update athlete' : 'Add to active roster'}
                 className="w-full bg-accent-cyan py-3.5 rounded-xl items-center justify-center shadow-lg shadow-cyan-500/20"
               >
                 <Text className="text-black font-black text-sm">

@@ -8,6 +8,7 @@ import {
   NutritionLog,
   BodyMetric,
   DaySchedule,
+  WeightUnit,
 } from '../types';
 import {
   UserRole,
@@ -66,9 +67,18 @@ export interface AppStoredData {
   athleteMembership: AthleteMembership | null;
 }
 
-export async function loadStoredAppData(): Promise<AppStoredData | null> {
+const workspaceKey = (uid: string) => `@ripped_workspace_data_${uid}`;
+
+export async function loadStoredAppData(uid: string, legacyOwnerId = uid): Promise<AppStoredData | null> {
   try {
-    const isInitialized = await AsyncStorage.getItem(STORAGE_KEYS.INITIALIZED);
+    const scoped = await AsyncStorage.getItem(workspaceKey(uid));
+    if (scoped) {
+      const data = JSON.parse(scoped) as AppStoredData | null;
+      return data?.currentUser?.id === uid ? data : null;
+    }
+
+    const isInitialized = await AsyncStorage.getItem(STORAGE_KEYS.INITIALIZED)
+      || await AsyncStorage.getItem(STORAGE_KEYS.INITIALIZED.replace('@ripped_', '@pumpd_'));
     if (!isInitialized) {
       return null;
     }
@@ -114,8 +124,11 @@ export async function loadStoredAppData(): Promise<AppStoredData | null> {
       }
     };
 
+    const currentUser = safeParse<UserProfile>(dataMap[STORAGE_KEYS.CURRENT_USER]);
+    if (currentUser?.id !== legacyOwnerId) return null;
+
     return {
-      currentUser: safeParse<UserProfile>(dataMap[STORAGE_KEYS.CURRENT_USER]),
+      currentUser,
       partnerUser: safeParse<UserProfile>(dataMap[STORAGE_KEYS.PARTNER_USER]),
       activeUserId: dataMap[STORAGE_KEYS.ACTIVE_USER_ID] || null,
       activeWorkspace: safeParse<Workspace>(dataMap[STORAGE_KEYS.WORKSPACE]),
@@ -160,71 +173,17 @@ export async function persistAppData(data: {
   trainerSubscription?: TrainerSubscription | null;
   athleteMembership?: AthleteMembership | null;
 }): Promise<void> {
-  try {
-    const pairs: [string, string][] = [
-      [STORAGE_KEYS.INITIALIZED, 'true'],
-      [STORAGE_KEYS.CURRENT_USER, JSON.stringify(data.currentUser)],
-      [STORAGE_KEYS.PARTNER_USER, JSON.stringify(data.partnerUser)],
-      [STORAGE_KEYS.ACTIVE_USER_ID, data.activeUserId],
-      [STORAGE_KEYS.WORKSPACE, JSON.stringify(data.activeWorkspace)],
-      [STORAGE_KEYS.EXERCISES, JSON.stringify(data.exercises)],
-      [STORAGE_KEYS.SPLITS, JSON.stringify(data.splits)],
-      [STORAGE_KEYS.WORKOUT_LOGS, JSON.stringify(data.workoutLogs)],
-      [STORAGE_KEYS.NUTRITION_LOGS, JSON.stringify(data.nutritionLogs)],
-      [STORAGE_KEYS.BODY_METRICS, JSON.stringify(data.bodyMetrics)],
-      [STORAGE_KEYS.USER_SCHEDULES, JSON.stringify(data.userSchedules)],
-    ];
-
-    if (data.userRole) {
-      pairs.push([STORAGE_KEYS.USER_ROLE, JSON.stringify(data.userRole)]);
-    }
-    if (data.accountType) {
-      pairs.push([STORAGE_KEYS.ACCOUNT_TYPE, data.accountType]);
-    }
-    if (data.coachProfile) {
-      pairs.push([STORAGE_KEYS.COACH_PROFILE, JSON.stringify(data.coachProfile)]);
-    }
-    if (data.clients) {
-      pairs.push([STORAGE_KEYS.CLIENTS, JSON.stringify(data.clients)]);
-    }
-    if (data.prescribedArchetypes) {
-      pairs.push([STORAGE_KEYS.PRESCRIBED_ARCHETYPES, JSON.stringify(data.prescribedArchetypes)]);
-    }
-    if (data.linkedCoach !== undefined) {
-      if (data.linkedCoach) {
-        pairs.push([STORAGE_KEYS.LINKED_COACH, JSON.stringify(data.linkedCoach)]);
-      } else {
-        await AsyncStorage.removeItem(STORAGE_KEYS.LINKED_COACH);
-      }
-    }
-    if (data.trainerSubscription !== undefined) {
-      if (data.trainerSubscription) {
-        pairs.push([STORAGE_KEYS.TRAINER_SUBSCRIPTION, JSON.stringify(data.trainerSubscription)]);
-      } else {
-        await AsyncStorage.removeItem(STORAGE_KEYS.TRAINER_SUBSCRIPTION);
-      }
-    }
-    if (data.athleteMembership !== undefined) {
-      if (data.athleteMembership) {
-        pairs.push([STORAGE_KEYS.ATHLETE_MEMBERSHIP, JSON.stringify(data.athleteMembership)]);
-      } else {
-        await AsyncStorage.removeItem(STORAGE_KEYS.ATHLETE_MEMBERSHIP);
-      }
-    }
-
-    await AsyncStorage.multiSet(pairs);
-  } catch (err) {
-    console.error('[Storage] Error saving app data:', err);
-  }
+  const owner=data.currentUser.id;
+  const serialized=JSON.stringify(data);
+  const write=(workspaceWrites.get(owner)||Promise.resolve()).catch(()=>{}).then(async()=>{
+    if(!frozenOwners.has(owner))await AsyncStorage.setItem(workspaceKey(owner),serialized);
+  });
+  workspaceWrites.set(owner,write);await write;
 }
 
-export async function clearStoredAppData(): Promise<void> {
-  try {
-    const allKeys = Object.values(STORAGE_KEYS);
-    await AsyncStorage.multiRemove(allKeys);
-  } catch (err) {
-    console.error('[Storage] Error clearing app data:', err);
-  }
+export async function clearStoredAppData(uid: string): Promise<void> {
+  await AsyncStorage.setItem(workspaceKey(uid), 'null');
+  await AsyncStorage.multiRemove([`@ripped_user_data_${uid}`, `@pumpd_user_data_${uid}`]);
 }
 
 export interface UserSession {
@@ -233,13 +192,15 @@ export interface UserSession {
   displayName: string;
   userRole?: UserRole;
   accountType?: AccountType;
+  isLocalGuest?: boolean;
+  weightUnit?: WeightUnit;
+  trainerCode?: string;
 }
 
 export interface StoredAccount {
   id: string;
   email: string;
   displayName: string;
-  password?: string;
   userRole?: UserRole;
   accountType?: AccountType;
   createdAt: number;
@@ -254,40 +215,51 @@ export async function getActiveSession(): Promise<UserSession | null> {
   }
 }
 
-export async function setActiveSession(session: UserSession): Promise<void> {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(session));
-  } catch (err) {
-    console.error('[Storage] Error saving active session:', err);
-  }
+export function setActiveSession(session: UserSession): Promise<void> {
+  return AsyncStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION, JSON.stringify(session));
 }
 
-export async function clearActiveSession(): Promise<void> {
-  try {
-    await AsyncStorage.removeItem(STORAGE_KEYS.ACTIVE_SESSION);
-  } catch (err) {
-    console.error('[Storage] Error clearing active session:', err);
-  }
+export function clearActiveSession(): Promise<void> {
+  return AsyncStorage.removeItem(STORAGE_KEYS.ACTIVE_SESSION);
+}
+
+const guestOwnerKey = (role: UserRole) => `@ripped_guest_workspace_${role}`;
+
+export function getGuestOwner(role: UserRole): Promise<string | null> {
+  return AsyncStorage.getItem(guestOwnerKey(role));
+}
+
+export function rememberGuestOwner(role: UserRole, uid: string): Promise<void> {
+  return AsyncStorage.setItem(guestOwnerKey(role), uid);
 }
 
 export async function getStoredAccounts(): Promise<StoredAccount[]> {
-  try {
-    const data = await AsyncStorage.getItem(STORAGE_KEYS.REGISTERED_ACCOUNTS);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
+  const accounts = new Map<string, StoredAccount>();
+  for (const key of [STORAGE_KEYS.REGISTERED_ACCOUNTS.replace('@ripped_', '@pumpd_'), STORAGE_KEYS.REGISTERED_ACCOUNTS]) {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) continue;
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { continue; }
+    if (!Array.isArray(parsed)) continue;
+    const sanitized = parsed.flatMap((record) => {
+      if (!record || typeof record.id !== 'string' || typeof record.email !== 'string') return [];
+      const { password: _password, ...account } = record;
+      accounts.set(account.id, account);
+      return [account];
+    });
+    if (JSON.stringify(sanitized) !== raw) {
+      await AsyncStorage.setItem(key, JSON.stringify(sanitized));
+    }
   }
+  return [...accounts.values()];
 }
 
 export async function saveStoredAccount(account: StoredAccount): Promise<void> {
-  try {
-    const existing = await getStoredAccounts();
-    const filtered = existing.filter((a) => a.email.toLowerCase() !== account.email.toLowerCase());
-    filtered.push(account);
-    await AsyncStorage.setItem(STORAGE_KEYS.REGISTERED_ACCOUNTS, JSON.stringify(filtered));
-  } catch (err) {
-    console.error('[Storage] Error saving account:', err);
-  }
+  const existing = await getStoredAccounts();
+  const next = existing.filter((item) => item.id !== account.id);
+  const { id, email, displayName, userRole, accountType, createdAt } = account;
+  next.push({ id, email, displayName, userRole, accountType, createdAt });
+  await AsyncStorage.setItem(STORAGE_KEYS.REGISTERED_ACCOUNTS, JSON.stringify(next));
 }
 
 export async function loadUserData(userId: string): Promise<{
@@ -323,3 +295,26 @@ export async function persistUserData(
   }
 }
 
+
+const frozenOwners = new Set<string>();
+const workspaceWrites=new Map<string,Promise<void>>();
+export function freezeLocalOwner(uid:string) { frozenOwners.add(uid); }
+export function unfreezeLocalOwner(uid:string) { frozenOwners.delete(uid); }
+export async function eraseOwnerLocalData(uid:string):Promise<void> {
+  frozenOwners.add(uid);
+  await workspaceWrites.get(uid)?.catch(()=>{});
+  const keys=await AsyncStorage.getAllKeys();
+  const owned=keys.filter(key=>key===workspaceKey(uid)||key===`@ripped_user_data_${uid}`||key===`@pumpd_user_data_${uid}`||key===`@ripped_cloud_outbox_${uid}`||['@ripped_','@pumpd_'].some(prefix=>key.startsWith(`${prefix}workout_draft_${JSON.stringify([uid]).slice(0,-1)},`)));
+  for(const prefix of ['@ripped_','@pumpd_']){
+    const raw=await AsyncStorage.getItem(`${prefix}current_user`);
+    if(raw && (()=>{try{return JSON.parse(raw)?.id===uid;}catch{return false;}})())owned.push(...Object.values(STORAGE_KEYS).map(key=>key.replace('@ripped_',prefix)).filter(key=>!key.endsWith('registered_accounts')&&!key.endsWith('auth_session')));
+    const registryKey=`${prefix}registered_accounts`;
+    const registry=await AsyncStorage.getItem(registryKey);
+    if(registry){try{const entries=JSON.parse(registry);if(Array.isArray(entries))await AsyncStorage.setItem(registryKey,JSON.stringify(entries.filter((item:StoredAccount)=>item.id!==uid)));}catch{}}
+  }
+  for(const cacheKey of keys.filter(key=>key.startsWith('@ripped_shared_split_')||key.startsWith('@pumpd_shared_split_'))){
+    try{const payload=JSON.parse((await AsyncStorage.getItem(cacheKey))||'null');if(payload?.authorId===uid)owned.push(cacheKey);}catch{}
+  }
+  await AsyncStorage.multiRemove([...new Set(owned)]);
+  const session=await getActiveSession();if(session?.uid===uid)await clearActiveSession();
+}

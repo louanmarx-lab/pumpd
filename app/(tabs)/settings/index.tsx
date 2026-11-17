@@ -1,3 +1,4 @@
+import { LegalSupportCard } from '../../../src/components/settings/LegalSupportCard';
 import React, { useState } from 'react';
 import {
   View,
@@ -329,7 +330,7 @@ export default function SettingsScreen() {
                   {TIER_CONFIGS[trainerSubscription.tier].name} ({trainerSubscription.seatLimit} Clients)
                 </Text>
                 <Text className="text-sm font-black text-amber-400">
-                  R{trainerSubscription.priceZar}/mo
+                  Store-billed subscription
                 </Text>
               </View>
               <Text className="text-xs text-zinc-400 mb-3">
@@ -559,10 +560,10 @@ export default function SettingsScreen() {
                   <Ionicons name="sparkles" size={16} color="#06B6D4" />
                   <Text className="text-sm font-bold text-white">Membership & Coaching Tiers</Text>
                 </View>
-                <Text className="text-xs font-black text-cyan-300">from R59/mo</Text>
+                <Text className="text-xs font-black text-cyan-300">Store pricing</Text>
               </View>
               <Text className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                Compare individual Athlete features (R59/mo) and Personal Trainer client seat plans (Entry R199, Standard R399, Pro R699, Custom).
+                Compare athlete and trainer plans. Current localized prices are shown by your app store before purchase.
               </Text>
               <TouchableOpacity
                 activeOpacity={0.85}
@@ -830,7 +831,10 @@ export default function SettingsScreen() {
                 cloudSyncStatus === 'synced' ? 'text-emerald-400' : 'text-amber-400'
               }`}
             >
-              {cloudSyncStatus === 'synced' ? '● Connected' : '● Offline Cache'}
+              {cloudSyncStatus === 'synced'
+                ? '● Connected'
+                : cloudSyncStatus === 'syncing' ? '● Sync Pending'
+                  : cloudSyncStatus === 'error' ? '● Sync Failed' : '● Saved on This Device'}
             </Text>
           </View>
         </View>
@@ -880,17 +884,17 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </View>
           <Text className="text-[11px] text-zinc-500 mt-2">
-            Database: ripped-a5726 • 100% offline-resilient local cache enabled
+            Workout and nutrition logs are stored on this device.
           </Text>
         </View>
 
         <View className="flex-row space-x-2">
           <TouchableOpacity
             activeOpacity={0.8}
-            onPress={async () => {
+            disabled={!firebaseUser || firebaseUser.isAnonymous || cloudSyncStatus === 'syncing'}
+            onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              await syncAllToCloud();
-              Alert.alert('Sync Complete ☁️', 'All workouts, metrics, and profiles are synced to Cloud Firestore.');
+              void syncAllToCloud();
             }}
             className="flex-1 bg-zinc-900 border border-zinc-750 py-2.5 rounded-xl flex-row items-center justify-center space-x-2"
           >
@@ -992,6 +996,7 @@ export default function SettingsScreen() {
 
 
 
+      <LegalSupportCard />
       {/* Device Local Storage & Test Data Card */}
       <View className="bg-dark-card border border-dark-border p-4 rounded-2xl mb-10">
         <View className="flex-row items-center justify-between mb-2">
@@ -1031,7 +1036,7 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        <View className="flex-row space-x-2">
+        {__DEV__ && <View className="flex-row space-x-2">
           <TouchableOpacity
             onPress={() => {
               Alert.alert(
@@ -1079,7 +1084,7 @@ export default function SettingsScreen() {
           >
             <Text className="text-xs font-bold text-zinc-300">Reset Defaults</Text>
           </TouchableOpacity>
-        </View>
+        </View>}
       </View>
 
       {/* Macro Target Edit Modal */}
@@ -1346,7 +1351,7 @@ export default function SettingsScreen() {
           setShowDowngradeModal(true);
         }}
         onSwitchToAthlete={() => {
-          setAccountType('athlete');
+          upgradeTrainerSubscription('starter');
           router.push('/(tabs)/workouts');
         }}
       />

@@ -46,16 +46,19 @@ export const HeaderBackToRosterButton: React.FC = () => {
     <TouchableOpacity
       activeOpacity={0.75}
       onPress={handlePress}
+      accessibilityRole="button"
+      accessibilityLabel="Back to clients"
+      accessibilityHint="Returns to the coach client roster"
       style={{ marginLeft: 12 }}
-      className={`flex-row items-center space-x-1 px-2.5 py-1.5 rounded-full border ${
+      className={`flex-row items-center space-x-1.5 px-3 py-1.5 rounded-full border shadow-sm ${
         isClientMode
-          ? 'bg-amber-500/15 border-amber-500/40'
-          : 'bg-cyan-500/15 border-cyan-500/40'
+          ? 'bg-amber-500/20 border-amber-400'
+          : 'bg-cyan-500/20 border-cyan-400'
       }`}
     >
       <Ionicons
         name="chevron-back"
-        size={14}
+        size={16}
         color={isClientMode ? '#F59E0B' : '#06B6D4'}
       />
       <Text
@@ -63,7 +66,7 @@ export const HeaderBackToRosterButton: React.FC = () => {
           isClientMode ? 'text-amber-400' : 'text-cyan-400'
         }`}
       >
-        Clients
+        Back to clients
       </Text>
     </TouchableOpacity>
   );

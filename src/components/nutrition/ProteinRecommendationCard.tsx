@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
@@ -126,7 +126,7 @@ export const ProteinRecommendationCard: React.FC<ProteinRecommendationCardProps>
             </Text>
             <Text className="text-[11px] text-zinc-400 font-medium" numberOfLines={1}>
               {isExpanded
-                ? 'Schoenfeld & Phillips Hypertrophy Range'
+                ? 'Protein reference estimates'
                 : `Based on ${latestWeightKg} kg • Tap to view guide`}
             </Text>
           </View>
@@ -160,12 +160,12 @@ export const ProteinRecommendationCard: React.FC<ProteinRecommendationCardProps>
         </View>
       </TouchableOpacity>
 
+      <Text className="text-sm text-zinc-300 mt-3">For individual nutrition or medical advice, consult a qualified healthcare professional.</Text>
+      <TouchableOpacity accessibilityRole="link" className="min-h-[48px] justify-center" onPress={()=>{void Linking.openURL('https://pubmed.ncbi.nlm.nih.gov/28698222/');}}><Text className="text-sm text-cyan-300">Research reference · Morton et al., 2018</Text></TouchableOpacity>
       {isExpanded && (
         <>
           <Text className="text-xs text-zinc-400 mt-3 mb-3 leading-relaxed">
-            Muscle protein synthesis (MPS) plateaus between{' '}
-            <Text className="text-zinc-200 font-semibold">1.6–2.2 g/kg</Text>.
-            Derived dynamically from your latest logged body weight:
+            These are general reference estimates for healthy adults who train. Individual needs vary; this is not a medical prescription.
           </Text>
 
       {/* Selectable Tier Cards */}

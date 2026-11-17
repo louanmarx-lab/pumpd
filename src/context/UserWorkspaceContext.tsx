@@ -1,4 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import * as cloudService from '../services/firestoreService';
+import { refreshPaidAccess } from '../services/inAppPurchaseService';
+import { subscribeCloudQueue, flushCloudQueue, pendingCloudOperations, reconcileCloudRecords } from '../utils/cloudSyncQueue';
+import { callSecureBackend } from '../services/secureBackend';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -16,8 +20,9 @@ import {
   DaySchedule,
   WeightUnit,
 } from '../types';
+import { formatLocalDate } from '../utils/localDate';
 import { DEFAULT_EXERCISES } from '../utils/fitness';
-import { buildAllPresetSplits, buildSplitFromPreset, PRESET_SPLITS } from '../utils/presetSplits';
+import { buildSplitFromPreset, PRESET_SPLITS } from '../utils/presetSplits';
 import {
   UserRole,
   AccountType,
@@ -45,13 +50,15 @@ import {
   persistAppData,
   clearStoredAppData,
   loadUserData,
-  persistUserData,
   getActiveSession,
-  STORAGE_KEYS,
+  getStoredAccounts,
+  rememberGuestOwner,
+  setActiveSession,
 } from '../utils/storage';
 import { User as FirebaseUser } from 'firebase/auth';
 import {
   saveUserProfileCloud,
+  fetchUserProfileCloud,
   saveWorkoutLogCloud,
   deleteWorkoutLogCloud,
   subscribeToWorkoutLogs,
@@ -119,7 +126,7 @@ interface UserWorkspaceContextType {
   upgradeTrainerSubscription: (tier: TrainerSubscriptionTier, customSeats?: number) => void;
   reconcileDowngradeSeats: (newTier: TrainerSubscriptionTier, activeClientIds: string[]) => void;
   getClientWorkoutLogs: (clientId: string) => WorkoutLog[];
-  logClientWorkout: (clientId: string, log: Omit<WorkoutLog, 'id'>) => WorkoutLog;
+  logClientWorkout: (clientId: string, log: Omit<WorkoutLog, 'id'>, id?: string) => Promise<WorkoutLog>;
   assignClientRoutine: (clientId: string, routineId: string, routineName: string) => void;
   assignClientMacros: (clientId: string, targets: MacroTargets) => void;
   assignClientArchetypes: (clientId: string, archetypes: PrescribedMealArchetype[]) => void;
@@ -165,7 +172,7 @@ interface UserWorkspaceContextType {
   restoreDefaultSplits: () => void;
   clearAllCoachSplits: () => void;
   removeExerciseFromRoutine: (splitId: string, routineId: string, exerciseId: string) => void;
-  saveWorkoutLog: (log: Omit<WorkoutLog, 'id'>) => WorkoutLog;
+  saveWorkoutLog: (log: Omit<WorkoutLog, 'id'>, id?: string, buddyLog?: WorkoutLog) => Promise<WorkoutLog>;
   deleteWorkoutLog: (logId: string) => void;
   saveNutritionMeal: (date: string, meal: Omit<Meal, 'id'>) => void;
   deleteNutritionMeal: (date: string, mealId: string) => void;
@@ -181,15 +188,14 @@ interface UserWorkspaceContextType {
     date?: string
   ) => void;
   deleteBodyMetric: (metricId: string) => void;
-  linkPartnerUser: (partnerName: string, partnerEmail: string) => void;
+  linkPartnerUser: (partnerName: string) => Promise<UserProfile>;
   clearAllData: () => Promise<void>;
   resetAllDataToDefaults: () => Promise<void>;
-  initializeBrandNewUser: (displayName: string, role?: UserRole, accountType?: AccountType) => Promise<void>;
 
   // Firebase Auth & Cloud Sync
   firebaseUser: FirebaseUser | null;
   isAuthReady: boolean;
-  cloudSyncStatus: 'synced' | 'syncing' | 'offline';
+  cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error';
   lastCloudSyncTimestamp: number | null;
   syncAllToCloud: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -250,7 +256,7 @@ const initialJordanSchedule: DaySchedule[] = [
 ];
 
 // Today and recent date helpers (YYYY-MM-DD)
-const formatDate = (dateObj: Date) => dateObj.toISOString().split('T')[0];
+const formatDate = formatLocalDate;
 const todayStr = formatDate(new Date());
 const yesterdayStr = formatDate(new Date(Date.now() - 86400000));
 const threeDaysAgoStr = formatDate(new Date(Date.now() - 3 * 86400000));
@@ -499,8 +505,7 @@ const initialTrainerSubscription: TrainerSubscription = {
   priceZar: 199,
   currency: 'ZAR',
   billingPeriod: 'monthly',
-  status: 'active',
-  expiresAt: Date.now() + 30 * 86400000,
+  status: 'canceled',
 };
 
 const UserWorkspaceContext = createContext<UserWorkspaceContextType | undefined>(undefined);
@@ -531,11 +536,11 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   const [managedClient, setManagedClient] = useState<ClientProfile | null>(null);
   const [isViewingPersonalProfile, setIsViewingPersonalProfile] = useState<boolean>(false);
   const [athleteMembership, setAthleteMembership] = useState<AthleteMembership>({
-    status: 'solo_active',
+    status: 'free',
   });
 
   const isCoachAccount = Boolean(
-    accountType === 'coach' && trainerSubscription?.status === 'active' && trainerSubscription?.tier
+    accountType === 'coach' && (currentUser.id.startsWith('guest_') || (trainerSubscription?.status === 'active' && (trainerSubscription.expiresAt || 0)>Date.now()))
   );
 
   const setUserRole = (role: UserRole) => {
@@ -578,7 +583,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         status: 'canceled',
       });
       setUserRoleState('athlete');
-      setAthleteMembership({ status: 'solo_active' });
+      setAthleteMembership({ status: 'free' });
       setLinkedCoach(null);
     }
   };
@@ -592,7 +597,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   // Cloud Sync & Auth State
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline'>('synced');
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('offline');
   const [lastCloudSyncTimestamp, setLastCloudSyncTimestamp] = useState<number | null>(Date.now());
 
   const [userSchedules, setUserSchedules] = useState<Record<string, DaySchedule[]>>({
@@ -600,230 +605,157 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     user_jordan: initialJordanSchedule,
   });
 
-  // 1. Hydrate state from local storage on launch
+  const identityRevision = useRef(0);
+  const hydratedOwner = useRef<string | null>(null);
+  const [pendingTrainerCode, setPendingTrainerCode] = useState<string | null>(null);
+
+  useEffect(() => subscribeCloudQueue((owner,status)=>{
+    if(hydratedOwner.current!==owner)return;
+    setCloudSyncStatus(status);
+    if(status==='synced')setLastCloudSyncTimestamp(Date.now());
+  }), []);
+  useEffect(()=>{
+    if(!isHydrated||!firebaseUser||firebaseUser.isAnonymous)return;
+    const retry=()=>{void flushCloudQueue(currentUser.id).catch(()=>{});};
+    retry(); const timer=setInterval(retry,30000);return()=>clearInterval(timer);
+  },[isHydrated,currentUser.id,firebaseUser?.uid]);
+
+  // Bind cloud mutations to the render's owner so stale async callbacks cannot enqueue another account's data.
+  const ownCloudCall = <A extends unknown[]>(fn:(...args:A)=>Promise<void>) => (...args:A):Promise<void> => {
+    if(currentUser.id.startsWith('guest_'))return Promise.resolve();
+    if(auth.currentUser?.uid!==currentUser.id || hydratedOwner.current!==currentUser.id)return Promise.reject(new Error('The account changed. Please retry from the current profile.'));
+    return fn(...args);
+  };
+  const saveUserProfileCloud=ownCloudCall(cloudService.saveUserProfileCloud);
+  const saveWorkoutLogCloud=ownCloudCall(cloudService.saveWorkoutLogCloud);
+  const deleteWorkoutLogCloud=ownCloudCall(cloudService.deleteWorkoutLogCloud);
+  const saveNutritionLogCloud=ownCloudCall(cloudService.saveNutritionLogCloud);
+  const deleteNutritionMealCloud=ownCloudCall(cloudService.deleteNutritionMealCloud);
+  const saveBodyMetricCloud=ownCloudCall(cloudService.saveBodyMetricCloud);
+  const deleteBodyMetricCloud=ownCloudCall(cloudService.deleteBodyMetricCloud);
+  const saveSplitsCloud=ownCloudCall(cloudService.saveSplitsCloud);
+  const saveCoachProfileCloud=ownCloudCall(cloudService.saveCoachProfileCloud);
+  const saveClientsCloud=ownCloudCall(cloudService.saveClientsCloud);
+  const savePrescribedArchetypesCloud=ownCloudCall(cloudService.savePrescribedArchetypesCloud);
+
+  // Hydrate a complete workspace for one identity before mounting subscriptions or writing state.
   useEffect(() => {
-    let isMounted = true;
-    (async () => {
-      try {
-        // Ensure every installation/phone has a globally unique user ID
-        const DEVICE_UID_KEY = '@ripped_unique_device_uid';
-        let deviceUid = await AsyncStorage.getItem(DEVICE_UID_KEY);
-        if (!deviceUid) {
-          deviceUid = await AsyncStorage.getItem('@pumpd_unique_device_uid');
-        }
-        if (!deviceUid) {
-          deviceUid = `user_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
-          await AsyncStorage.setItem(DEVICE_UID_KEY, deviceUid);
-        }
+    void getStoredAccounts().catch((error) => console.warn('[Storage] Credential migration failed:', error));
+    const unsubscribe = subscribeToAuth(async (user) => {
+      const ownerId = user?.uid || null;
+      if (hydratedOwner.current === ownerId && ownerId) return;
+      const revision = ++identityRevision.current;
+      hydratedOwner.current = null;
+      setIsHydrated(false);
+      setIsAuthReady(false);
 
-        const stored = await loadStoredAppData();
-        if (stored && isMounted) {
-          let user = stored.currentUser || initialCurrentUser;
-          if (user.id === 'user_alex') {
-            user = { ...user, id: deviceUid };
-          }
-          setCurrentUser(user);
-          if (stored.partnerUser !== undefined) setPartnerUser(stored.partnerUser);
-          if (stored.activeWorkspace) {
-            const ws = stored.activeWorkspace;
-            setActiveWorkspace({
-              ...ws,
-              ownerId: ws.ownerId === 'user_alex' ? deviceUid : ws.ownerId,
-              memberIds: ws.memberIds.map((m) => (m === 'user_alex' ? deviceUid : m)),
-            });
-          }
-          if (stored.exercises && stored.exercises.length > 0) {
-            const existingNames = new Set(stored.exercises.map((e) => e.name.toLowerCase().trim()));
-            const missingDefaults = DEFAULT_EXERCISES.filter(
-              (d) => !existingNames.has(d.name.toLowerCase().trim())
-            );
-            setExercises([...stored.exercises, ...missingDefaults]);
-          } else {
-            setExercises(DEFAULT_EXERCISES);
-          }
-          if (stored.splits && stored.splits.length > 0) {
-            let mappedSplits = stored.splits.map((s) => (s.userId === 'user_alex' ? { ...s, userId: deviceUid } : s));
-
-            // Purge all 360 demo / preset splits - coaches and lifters build custom splits
-            const isPresetSplit = (s: Split) =>
-              s.id.startsWith('preset_') ||
-              s.id.startsWith('split_preset_') ||
-              PRESET_SPLITS.some(
-                (p) => p.name.trim().toLowerCase() === s.name.trim().toLowerCase() || p.id === s.id
-              );
-
-            let cleanedSplits = mappedSplits.filter((s) => !isPresetSplit(s));
-
-            // Deduplicate remaining custom splits by id
-            const seenSplitIds = new Set<string>();
-            cleanedSplits = cleanedSplits.filter((s) => {
-              if (!s.id || seenSplitIds.has(s.id)) return false;
-              seenSplitIds.add(s.id);
-              return true;
-            });
-
-            // Enforce hard cap of maximum 50 splits
-            if (cleanedSplits.length > 50) {
-              cleanedSplits = cleanedSplits.slice(0, 50);
-            }
-
-            setSplits(cleanedSplits);
-            await AsyncStorage.setItem(STORAGE_KEYS.SPLITS, JSON.stringify(cleanedSplits));
-            saveSplitsCloud(deviceUid, cleanedSplits).catch(() => {});
-          } else {
-            setSplits([]);
-          }
-          await AsyncStorage.setItem(`@ripped_presets_seeded_v3_${deviceUid}`, 'true');
-          if (stored.workoutLogs) {
-            setWorkoutLogs(stored.workoutLogs.map((l) => (l.userId === 'user_alex' ? { ...l, userId: deviceUid } : l)));
-          }
-          if (stored.nutritionLogs) {
-            setNutritionLogs(stored.nutritionLogs.map((n) => (n.userId === 'user_alex' ? { ...n, userId: deviceUid } : n)));
-          }
-          if (stored.bodyMetrics) {
-            setBodyMetrics(stored.bodyMetrics.map((b) => (b.userId === 'user_alex' ? { ...b, userId: deviceUid } : b)));
-          }
-          if (stored.userSchedules) setUserSchedules(stored.userSchedules);
-          const resolvedAccountType: AccountType = stored.accountType
-            ? stored.accountType
-            : stored.userRole === 'coach'
-            ? 'coach'
-            : stored.linkedCoach || stored.athleteMembership?.status === 'sponsored_by_coach'
-            ? 'client'
-            : 'athlete';
-          setAccountTypeState(resolvedAccountType);
-          if (stored.userRole) setUserRoleState(stored.userRole);
-          if (stored.coachProfile) setCoachProfile(stored.coachProfile);
-          if (stored.clients !== undefined && stored.clients !== null) setClients(stored.clients);
-          if (stored.prescribedArchetypes !== undefined && stored.prescribedArchetypes !== null) {
-            setPrescribedArchetypes(stored.prescribedArchetypes);
-            if (Array.isArray(stored.prescribedArchetypes) && stored.prescribedArchetypes.length > 0) {
-              setCoachMeals(stored.prescribedArchetypes);
-            }
-          }
-          if (stored.linkedCoach !== undefined) {
-            setLinkedCoach(resolvedAccountType === 'coach' ? null : stored.linkedCoach);
-          }
-          if (resolvedAccountType === 'coach') {
-            setTrainerSubscription(stored.trainerSubscription || initialTrainerSubscription);
-          } else {
-            setTrainerSubscription({
-              tier: 'starter',
-              seatLimit: 0,
-              priceZar: 0,
-              currency: 'ZAR',
-              billingPeriod: 'monthly',
-              status: 'canceled',
-            });
-          }
-          if (stored.athleteMembership) {
-            setAthleteMembership(stored.athleteMembership);
-          } else if (stored.linkedCoach) {
-            setAthleteMembership({
-              status: 'sponsored_by_coach',
-              coachName: stored.linkedCoach.name,
-              coachBusiness: stored.linkedCoach.businessName,
-            });
-          }
-
-          if (stored.activeUserId) {
-            if (stored.partnerUser && stored.activeUserId === stored.partnerUser.id) {
-              setActiveUser(stored.partnerUser);
-            } else {
-              setActiveUser(user);
-            }
-          } else {
-            setActiveUser(user);
-          }
-        } else if (!stored && isMounted) {
-          // Fresh install: start with a completely clean slate
-          const freshUser: UserProfile = {
-            id: deviceUid,
-            displayName: 'Lifter',
-            email: '',
-            activeWorkspaceId: `ws_${deviceUid}`,
-            macroTargets: { calories: 2200, protein: 160, carbs: 220, fats: 70 },
-            weightUnit: 'kg',
-            createdAt: Date.now(),
-          };
-          setCurrentUser(freshUser);
-          setActiveUser(freshUser);
-          setActiveWorkspace({
-            id: `ws_${deviceUid}`,
-            name: 'Personal Account',
-            ownerId: deviceUid,
-            memberIds: [deviceUid],
-          });
-          setSplits([]);
-          setWorkoutLogs([]);
-          setNutritionLogs([]);
-          setBodyMetrics([]);
-          setClients([]);
-          setPrescribedArchetypes([]);
-          setLinkedCoach(null);
-          setUserSchedules({});
-          setCoachProfile({
-            name: 'Coach',
-            businessName: '',
-            instagramHandle: '',
-          });
-        }
-      } catch (err) {
-        console.error('[UserWorkspaceContext] Error hydrating local storage:', err);
-      } finally {
-        if (isMounted) {
-          setIsHydrated(true);
+      const session = user ? await getActiveSession() : null;
+      const matchingSession = session?.uid === ownerId ? session : null;
+      let stored = ownerId ? await loadStoredAppData(ownerId) : null;
+      // An earlier offline guest launch could store logs under the installation's device ID.
+      if (!stored && user?.isAnonymous) {
+        const legacyDeviceId = await AsyncStorage.getItem('@ripped_unique_device_uid').catch(() => null)
+          || await AsyncStorage.getItem('@pumpd_unique_device_uid').catch(() => null);
+        if (legacyDeviceId) {
+          const legacy = await loadStoredAppData(user.uid, legacyDeviceId);
+          const requestedRole = matchingSession?.userRole || 'athlete';
+          if (legacy && (legacy.userRole || 'athlete') === requestedRole) stored = legacy;
         }
       }
-    })();
+      const legacyLogs = ownerId && !stored ? await loadUserData(ownerId) : null;
+      const storedAccount = user && !user.isAnonymous
+        ? (await getStoredAccounts().catch(() => [])).find((entry) => entry.id === ownerId)
+        : undefined;
+      let cloudAccountType: AccountType | undefined;
+      if (user && !user.isAnonymous && !stored?.accountType && !matchingSession?.accountType && !storedAccount?.accountType) {
+        const cloudProfile = await Promise.race([
+          fetchUserProfileCloud(user.uid),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
+        ]);
+        cloudAccountType = cloudProfile?.accountType;
+      }
+      if (revision !== identityRevision.current) return;
 
+      const resolvedRole = stored?.userRole || matchingSession?.userRole || storedAccount?.userRole || legacyLogs?.userRole || 'athlete';
+      const resolvedAccountType = stored?.accountType || matchingSession?.accountType || storedAccount?.accountType
+        || cloudAccountType || (resolvedRole === 'coach' ? 'coach' : 'athlete');
+      const previousOwner = stored?.currentUser?.id;
+      const uid = ownerId || initialCurrentUser.id;
+      const remapId = (id: string) => id === previousOwner ? uid : id;
+      const profile: UserProfile = {
+        ...initialCurrentUser,
+        ...stored?.currentUser,
+        id: uid,
+        displayName: stored?.currentUser?.displayName || matchingSession?.displayName || user?.displayName
+          || user?.email?.split('@')[0] || 'Lifter',
+        email: user?.email || '',
+        activeWorkspaceId: stored?.activeWorkspace?.id || `ws_${uid}`,
+        weightUnit: stored?.currentUser?.weightUnit || matchingSession?.weightUnit || 'kg',
+      };
+      const ownedIds = new Set([uid, previousOwner, stored?.partnerUser?.id]);
+      for (const client of stored?.clients || []) {
+        ownedIds.add(client.id);
+        if (client.linkedUserId) ownedIds.add(client.linkedUserId);
+      }
+      const restoreLogs = <T extends { userId: string }>(logs: T[]) =>
+        logs.filter((log) => ownedIds.has(log.userId)).map((log) => ({ ...log, userId: remapId(log.userId) }));
+
+      const customExercises = stored?.exercises || [];
+      const exerciseNames = new Set(customExercises.map((exercise) => exercise.name.trim().toLowerCase()));
+      setExercises([...customExercises, ...DEFAULT_EXERCISES.filter((exercise) => !exerciseNames.has(exercise.name.trim().toLowerCase()))]);
+      setCurrentUser(profile);
+      setPartnerUser(stored?.partnerUser || null);
+      setActiveUser(stored?.partnerUser && stored.activeUserId === stored.partnerUser.id ? stored.partnerUser : profile);
+      setActiveWorkspace(stored?.activeWorkspace ? {
+        ...stored.activeWorkspace,
+        ownerId: uid,
+        memberIds: stored.activeWorkspace.memberIds.map(remapId),
+      } : { id: profile.activeWorkspaceId, name: 'Personal Account', ownerId: uid, memberIds: [uid] });
+      setSplits(Array.from(new Map(restoreLogs(stored?.splits || []).map((split) => [split.id, split])).values()).slice(0, 50));
+      setWorkoutLogs(restoreLogs(stored?.workoutLogs || legacyLogs?.workoutLogs || []));
+      setNutritionLogs(restoreLogs(stored?.nutritionLogs || legacyLogs?.nutritionLogs || []));
+      setBodyMetrics(restoreLogs(stored?.bodyMetrics || legacyLogs?.bodyMetrics || []));
+      setUserSchedules(Object.fromEntries(Object.entries(stored?.userSchedules || {}).map(([id, schedule]) => [remapId(id), schedule])));
+      setAccountTypeState(resolvedAccountType);
+      setUserRoleState(resolvedAccountType === 'coach' ? 'coach' : 'athlete');
+      setCoachProfile(stored?.coachProfile || { name: profile.displayName, businessName: '', instagramHandle: '' });
+      setClients(stored?.clients || []);
+      setPrescribedArchetypes(stored?.prescribedArchetypes || []);
+      setCoachMeals(stored?.prescribedArchetypes || []);
+      setLinkedCoach(stored?.linkedCoach || null);
+      setManagedClient(null);
+      setIsViewingPersonalProfile(false);
+      setTrainerSubscription((user?.isAnonymous ? stored?.trainerSubscription : null) || (resolvedAccountType === 'coach'
+        ? initialTrainerSubscription
+        : { tier: 'starter', seatLimit: 0, priceZar: 0, currency: 'ZAR', billingPeriod: 'monthly', status: 'canceled' }));
+      setAthleteMembership((user?.isAnonymous ? stored?.athleteMembership : null) || { status: 'free' });
+      setPendingTrainerCode(matchingSession?.trainerCode || null);
+      setCloudSyncStatus('offline');
+      setLastCloudSyncTimestamp(null);
+      hydratedOwner.current = ownerId;
+      setFirebaseUser(user);
+      setIsHydrated(Boolean(ownerId));
+      setIsAuthReady(true);
+      if (user?.isAnonymous) {
+        void rememberGuestOwner(resolvedAccountType === 'coach' ? 'coach' : 'athlete', user.uid).catch(() => {});
+      } else if (user && matchingSession?.weightUnit && matchingSession.accountType) {
+        void cloudService.saveUserProfileCloud(user.uid, {
+          displayName: profile.displayName,
+          weightUnit: matchingSession.weightUnit,
+          accountType: matchingSession.accountType,
+        }).catch(()=>{});
+      }
+    });
     return () => {
-      isMounted = false;
+      identityRevision.current++;
+      unsubscribe();
     };
   }, []);
 
-  // 2. Persist state to local storage whenever changed (after initial hydration - debounced 400ms)
-  useEffect(() => {
-    if (!isHydrated) return;
-
-    const timer = setTimeout(() => {
-      persistAppData({
-        currentUser,
-        partnerUser,
-        activeUserId: activeUser.id,
-        activeWorkspace,
-        exercises,
-        splits,
-        workoutLogs,
-        nutritionLogs,
-        bodyMetrics,
-        userSchedules,
-        userRole,
-        accountType,
-        coachProfile,
-        clients,
-        prescribedArchetypes,
-        linkedCoach,
-        trainerSubscription,
-        athleteMembership,
-      });
-
-      if (activeUser?.id) {
-        persistUserData(activeUser.id, {
-          workoutLogs,
-          nutritionLogs,
-          bodyMetrics,
-          userRole,
-        });
-      }
-    }, 400);
-
-    return () => clearTimeout(timer);
-  }, [
-    isHydrated,
+  const workspaceSnapshot = {
     currentUser,
     partnerUser,
-    activeUser.id,
+    activeUserId: activeUser.id,
     activeWorkspace,
     exercises,
     splits,
@@ -839,135 +771,35 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     linkedCoach,
     trainerSubscription,
     athleteMembership,
+  };
+
+  useEffect(() => {
+    if (!isHydrated || hydratedOwner.current !== currentUser.id) return;
+    void persistAppData(workspaceSnapshot).catch((error) => console.warn('[Storage] Workspace save failed:', error));
+  }, [
+    isHydrated, currentUser, partnerUser, activeUser.id, activeWorkspace, exercises, splits,
+    workoutLogs, nutritionLogs, bodyMetrics, userSchedules, userRole, accountType, coachProfile,
+    clients, prescribedArchetypes, linkedCoach, trainerSubscription, athleteMembership,
   ]);
 
-  // 3. Firebase & Local Auth Initialization & State Tracking
-  useEffect(() => {
-    let hasResolved = false;
-    const unsub = subscribeToAuth(async (user) => {
-      hasResolved = true;
-      setFirebaseUser(user);
-      if (user && !user.isAnonymous) {
-        const userProfile: UserProfile = {
-          id: user.uid,
-          displayName: user.displayName || user.email?.split('@')[0] || 'Lifter',
-          email: user.email || '',
-          activeWorkspaceId: `ws_${user.uid}`,
-          macroTargets: { calories: 2500, protein: 175, carbs: 260, fats: 75 },
-          createdAt: Date.now(),
-        };
-        setCurrentUser(userProfile);
-        setActiveUser(userProfile);
-        setCloudSyncStatus('synced');
-
-        // Load isolated user data and active session in parallel
-        const [userData, session] = await Promise.all([
-          loadUserData(user.uid),
-          getActiveSession(),
-        ]);
-
-        const resolvedRole: UserRole = session?.userRole || userData?.userRole || 'athlete';
-        const resolvedAccountType: AccountType = session?.accountType || (resolvedRole === 'coach' ? 'coach' : 'athlete');
-
-        setAccountType(resolvedAccountType);
-        setUserRoleState(resolvedRole);
-
-        if (userData) {
-          if (userData.workoutLogs) setWorkoutLogs(userData.workoutLogs);
-          if (userData.nutritionLogs) setNutritionLogs(userData.nutritionLogs);
-          if (userData.bodyMetrics) setBodyMetrics(userData.bodyMetrics);
-        } else {
-          // Brand new profile: zero logged data, zero active splits, clean profile
-          setWorkoutLogs([]);
-          setNutritionLogs([]);
-          setBodyMetrics([]);
-          setSplits([]);
-          setUserSchedules({});
-          setLinkedCoach(null);
-          setClients([]);
-          setPrescribedArchetypes([]);
-          setCoachProfile({
-            name: userProfile.displayName,
-            businessName: '',
-            instagramHandle: '',
-          });
-        }
-      } else if (user && user.isAnonymous) {
-        const session = await getActiveSession();
-        const guestName = session?.displayName || currentUser.displayName || 'Guest Lifter';
-        const guestProfile: UserProfile = {
-          id: user.uid,
-          displayName: guestName,
-          email: 'guest@ripped.app',
-          activeWorkspaceId: `ws_${user.uid}`,
-          macroTargets: currentUser.macroTargets || { calories: 2500, protein: 175, carbs: 260, fats: 75 },
-          weightUnit: currentUser.weightUnit || 'kg',
-          createdAt: Date.now(),
-        };
-        setCurrentUser(guestProfile);
-        setActiveUser(guestProfile);
-        setCloudSyncStatus('synced');
-        const resolvedRole: UserRole = session?.userRole || 'athlete';
-        const resolvedAccountType: AccountType = session?.accountType || (resolvedRole === 'coach' ? 'coach' : 'athlete');
-        setAccountType(resolvedAccountType);
-        setUserRoleState(resolvedRole);
-      } else {
-        setCloudSyncStatus('offline');
-      }
-      setIsAuthReady(true);
-    });
-
-    // Safeguard: Ensure screen is never stuck indefinitely on splash/loading if auth delays
-    const fallbackTimer = setTimeout(() => {
-      if (!hasResolved) {
-        setIsAuthReady(true);
-      }
-    }, 1200);
-
-    return () => {
-      clearTimeout(fallbackTimer);
-      unsub();
-    };
-  }, []);
-
   const signOut = async () => {
-    try {
-      if (activeUser?.id) {
-        await persistUserData(activeUser.id, {
-          workoutLogs,
-          nutritionLogs,
-          bodyMetrics,
-          userRole,
-        });
-      }
-      await signOutUser();
-      setFirebaseUser(null);
-      setCurrentUser(initialCurrentUser);
-      setActiveUser(initialCurrentUser);
-      setWorkoutLogs([]);
-      setNutritionLogs([]);
-      setBodyMetrics([]);
-    } catch (err) {
-      console.warn('[Auth] Error signing out:', err);
-    }
+    if (hydratedOwner.current === currentUser.id) await persistAppData(workspaceSnapshot);
+    await signOutUser();
   };
 
   const continueAsGuest = async (
     role: UserRole = 'athlete',
     targetAccountType: AccountType = 'athlete'
   ) => {
-    try {
-      setAccountType(targetAccountType);
-      await signInAsGuest(role, targetAccountType);
-    } catch (err) {
-      console.warn('[Auth] Error signing in as guest:', err);
-    }
+    if (hydratedOwner.current === currentUser.id) await persistAppData(workspaceSnapshot);
+    await signInAsGuest(role, targetAccountType);
   };
 
   // 4. Cloud Firestore Real-Time Sync with Local Persistent Cache
   useEffect(() => {
-    if (!activeUser?.id || !isHydrated) return;
+    if (!isHydrated || hydratedOwner.current !== currentUser.id || auth.currentUser?.uid !== currentUser.id) return;
 
+    let active = true;
     const unsubs: (() => void)[] = [];
 
     // Collect all user IDs that need to be synchronized
@@ -996,84 +828,35 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     }
 
-    // Subscribe to workouts, nutrition, and metrics for all target IDs
     syncUserIds.forEach((uid) => {
-      const unsubW = subscribeToWorkoutLogs(uid, (cloudLogs) => {
-        if (cloudLogs.length > 0) {
-          setWorkoutLogs((prev) => {
-            const map = new Map<string, WorkoutLog>();
-            prev.forEach((l) => map.set(l.id, l));
-            cloudLogs.forEach((l) => {
-              // Ensure log has its owner userId
-              map.set(l.id, { ...l, userId: l.userId || uid });
-            });
-            return Array.from(map.values()).sort(
-              (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
-            );
-          });
-          setLastCloudSyncTimestamp(Date.now());
-          setCloudSyncStatus('synced');
-        }
-      });
-      unsubs.push(unsubW);
-
-      const unsubN = subscribeToNutritionLogs(uid, (cloudLogs) => {
-        if (cloudLogs.length > 0) {
-          setNutritionLogs((prev) => {
-            const map = new Map<string, NutritionLog>();
-            // Key by `${userId}_${date}` to strictly avoid cross-user overwrites
-            prev.forEach((l) => {
-              const k = `${l.userId || 'unknown'}_${l.date}`;
-              map.set(k, l);
-            });
-            cloudLogs.forEach((l) => {
-              const logUserId = l.userId || uid;
-              const k = `${logUserId}_${l.date}`;
-              const existing = map.get(k);
-              if (!existing) {
-                map.set(k, { ...l, userId: logUserId });
-              } else {
-                // Merge meals avoiding duplicates
-                const mealMap = new Map<string, Meal>();
-                (existing.meals || []).forEach((m) => mealMap.set(m.id, m));
-                (l.meals || []).forEach((m) => mealMap.set(m.id, m));
-                map.set(k, {
-                  ...existing,
-                  ...l,
-                  userId: logUserId,
-                  meals: Array.from(mealMap.values()),
-                  waterMl: Math.max(existing.waterMl || 0, l.waterMl || 0),
-                });
-              }
-            });
-            return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
-          });
-          setLastCloudSyncTimestamp(Date.now());
-          setCloudSyncStatus('synced');
-        }
-      });
-      unsubs.push(unsubN);
-
-      const unsubM = subscribeToBodyMetrics(uid, (cloudMetrics) => {
-        if (cloudMetrics.length > 0) {
-          setBodyMetrics((prev) => {
-            const map = new Map<string, BodyMetric>();
-            prev.forEach((m) => map.set(m.id, m));
-            cloudMetrics.forEach((m) => {
-              map.set(m.id, { ...m, userId: m.userId || uid });
-            });
-            return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
-          });
-          setLastCloudSyncTimestamp(Date.now());
-          setCloudSyncStatus('synced');
-        }
-      });
-      unsubs.push(unsubM);
+      const apply = async (kind: string, remote: any[]) => {
+        const pending = await pendingCloudOperations(currentUser.id);
+        if (!active || hydratedOwner.current !== currentUser.id) return;
+        if (kind === 'workouts') setWorkoutLogs(previous => reconcileCloudRecords(previous,remote,uid,kind,pending).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0)));
+        if (kind === 'nutrition') setNutritionLogs(previous => reconcileCloudRecords(previous,remote,uid,kind,pending).sort((a,b)=>b.date.localeCompare(a.date)));
+        if (kind === 'bodyMetrics') setBodyMetrics(previous => reconcileCloudRecords(previous,remote,uid,kind,pending).sort((a,b)=>a.date.localeCompare(b.date)));
+      };
+      unsubs.push(subscribeToWorkoutLogs(uid,remote=>{void apply('workouts',remote).catch(()=>setCloudSyncStatus('error'));}));
+      unsubs.push(subscribeToNutritionLogs(uid,remote=>{void apply('nutrition',remote).catch(()=>setCloudSyncStatus('error'));}));
+      unsubs.push(subscribeToBodyMetrics(uid,remote=>{void apply('bodyMetrics',remote).catch(()=>setCloudSyncStatus('error'));}));
     });
 
     // Real-time synchronization of macro targets, coach prescriptions, splits, and membership
     const unsubProfile = subscribeToUserProfile(activeUser.id, (cloudUser) => {
+      if (!active) return;
       if (cloudUser) {
+        if(activeUser.id===currentUser.id){
+          const paid=cloudUser.serverEntitlements;
+          if(paid&&paid.tier!=='athlete'&&paid.expiresAt>Date.now()&&TIER_CONFIGS[paid.tier as TrainerSubscriptionTier]){
+            setTrainerSubscription({...initialTrainerSubscription,tier:paid.tier,seatLimit:paid.seatLimit,status:'active',expiresAt:paid.expiresAt});
+          }else setTrainerSubscription({...initialTrainerSubscription,status:'canceled',seatLimit:0});
+        }
+
+        if (cloudUser.weightUnit) {
+          const weightUnit = cloudUser.weightUnit;
+          setActiveUser((prev) => ({ ...prev, weightUnit }));
+          if (activeUser.id === currentUser.id) setCurrentUser((prev) => ({ ...prev, weightUnit }));
+        }
         if (cloudUser.macroTargets) {
           setActiveUser((prev) => ({
             ...prev,
@@ -1123,67 +906,31 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     });
     unsubs.push(unsubProfile);
 
-    // If athlete is linked to a coach, subscribe to the coach's roster document in real time!
-    if (linkedCoach?.coachId) {
-      const unsubCoachForAthlete = subscribeToCoachData(linkedCoach.coachId, (coachData) => {
-        if (coachData && Array.isArray(coachData.clients)) {
-          const myClientEntry = coachData.clients.find(
-            (c) =>
-              (c.linkedUserId && c.linkedUserId === activeUser.id) ||
-              (c.email && activeUser.email && c.email.toLowerCase() === activeUser.email.toLowerCase())
-          );
-          if (myClientEntry) {
-            if (Array.isArray(myClientEntry.prescribedArchetypes)) {
-              setPrescribedArchetypes(myClientEntry.prescribedArchetypes);
-            }
-            if (myClientEntry.macroTargets) {
-              setActiveUser((prev) => ({ ...prev, macroTargets: myClientEntry.macroTargets }));
-              setCurrentUser((prev) => ({ ...prev, macroTargets: myClientEntry.macroTargets }));
-            }
-            if (myClientEntry.assignedSplitName) {
-              setSplits((prev) =>
-                prev.map((s) =>
-                  s.userId === activeUser.id && s.isActive
-                    ? { ...s, name: myClientEntry.assignedSplitName! }
-                    : s
-                )
-              );
-            }
-          }
-        }
-      });
-      unsubs.push(unsubCoachForAthlete);
-    }
+    // Athletes receive their own prescriptions through their profile, never another coach's full roster.
 
     // For coaches: Real-time synchronization of client roster from Firestore
     if (userRole === 'coach' || isCoachAccount) {
-      const unsubCoach = subscribeToCoachData(currentUser.id, (cloudData) => {
+      const unsubCoach = subscribeToCoachData(currentUser.id, async (cloudData) => {
+        if (!active) return;
         if (cloudData && Array.isArray(cloudData.clients)) {
-          setClients((prev) => {
-            const clientMap = new Map<string, ClientProfile>();
-            prev.forEach((c) => clientMap.set(c.id, c));
-            cloudData.clients!.forEach((cloudClient) => {
-              const existing = clientMap.get(cloudClient.id);
-              if (!existing) {
-                clientMap.set(cloudClient.id, cloudClient);
-              } else {
-                clientMap.set(cloudClient.id, {
-                  ...existing,
-                  ...cloudClient,
-                  linkedUserId: cloudClient.linkedUserId || existing.linkedUserId,
-                  type: cloudClient.type || existing.type,
-                  status: cloudClient.status || existing.status,
-                });
-              }
-            });
-            return Array.from(clientMap.values());
-          });
+          const operations=await pendingCloudOperations(currentUser.id);
+          if(!active || hydratedOwner.current!==currentUser.id)return;
+          const pendingProfile=operations.find(op=>op.path.length===2&&op.path[1]===currentUser.id&&!op.deleted);
+          const canonicalClients:ClientProfile[]=pendingProfile?.data?.clients ?? cloudData.clients;
+          const revoked=clients.flatMap(client=>client.linkedUserId&&!canonicalClients.some(next=>next.linkedUserId===client.linkedUserId)?[client.linkedUserId]:[]);
+          if(revoked.length){
+            setWorkoutLogs(previous=>previous.filter(record=>!revoked.includes(record.userId)));
+            setNutritionLogs(previous=>previous.filter(record=>!revoked.includes(record.userId)));
+            setBodyMetrics(previous=>previous.filter(record=>!revoked.includes(record.userId)));
+          }
+          setClients(canonicalClients);
 
           // If currently managing a client, keep managedClient & activeUser in sync with incoming coach updates!
           if (managedClient) {
-            const updated = cloudData.clients.find((c) => c.id === managedClient.id);
+            const updated = canonicalClients.find((c) => c.id === managedClient.id);
             if (updated) {
               setManagedClient(updated);
+              if(!updated.linkedUserId && activeUser.id!==updated.id)setActiveUser(previous=>({...previous,id:updated.id}));
               if (updated.linkedUserId && activeUser.id !== updated.linkedUserId) {
                 setActiveUser((prev) => ({ ...prev, id: updated.linkedUserId! }));
               }
@@ -1201,6 +948,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     return () => {
+      active = false;
       unsubs.forEach((u) => u());
     };
   }, [
@@ -1218,7 +966,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // 5. Ensure all active shadow clients have valid tokens published to Cloud Firestore
   useEffect(() => {
-    if (!isHydrated) return;
+    if (!isHydrated || hydratedOwner.current !== currentUser.id || auth.currentUser?.uid !== currentUser.id) return;
     if (userRole !== 'coach' && !isCoachAccount) return;
     if (!currentUser?.id) return;
 
@@ -1260,31 +1008,27 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [isHydrated, userRole, isCoachAccount, currentUser?.id, clients.length]);
 
   const syncAllToCloud = async () => {
+    if (!isHydrated || hydratedOwner.current !== currentUser.id || auth.currentUser?.uid !== currentUser.id) return;
     setCloudSyncStatus('syncing');
     try {
-      await saveUserProfileCloud(activeUser.id, {
-        displayName: activeUser.displayName,
-        email: activeUser.email,
-        macroTargets: activeUser.macroTargets,
-      });
-      await saveCoachProfileCloud(activeUser.id, coachProfile);
-      await saveClientsCloud(activeUser.id, clients);
-      await saveSplitsCloud(activeUser.id, splits);
+      await saveUserProfileCloud(activeUser.id, activeUser.id===currentUser.id ? {
+        displayName:activeUser.displayName,email:activeUser.email,macroTargets:activeUser.macroTargets,
+      } : {macroTargets:activeUser.macroTargets});
+      if (activeUser.id === currentUser.id) {
+        await saveUserProfileCloud(currentUser.id, { accountType });
+        await saveCoachProfileCloud(currentUser.id, coachProfile);
+        await saveClientsCloud(currentUser.id, clients);
+      }
+      await saveSplitsCloud(activeUser.id, splits.filter(split=>split.userId===activeUser.id));
       await savePrescribedArchetypesCloud(activeUser.id, prescribedArchetypes);
-      for (const log of workoutLogs.filter((l) => l.userId === activeUser.id)) {
-        await saveWorkoutLogCloud(activeUser.id, log);
+      await flushCloudQueue(currentUser.id,true);
+      if (hydratedOwner.current === currentUser.id) {
+        setLastCloudSyncTimestamp(Date.now());
+        setCloudSyncStatus('synced');
       }
-      for (const nLog of nutritionLogs.filter((l) => l.userId === activeUser.id)) {
-        await saveNutritionLogCloud(activeUser.id, nLog);
-      }
-      for (const metric of bodyMetrics.filter((m) => m.userId === activeUser.id)) {
-        await saveBodyMetricCloud(activeUser.id, metric);
-      }
-      setLastCloudSyncTimestamp(Date.now());
-      setCloudSyncStatus('synced');
     } catch (e) {
       console.warn('Manual cloud sync failed:', e);
-      setCloudSyncStatus('offline');
+      if (hydratedOwner.current === currentUser.id) setCloudSyncStatus('error');
     }
   };
 
@@ -1747,7 +1491,6 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     const targetUserId = activeWorkspace.ownerId || activeUser.id;
     setSplits((prev) => {
       const remaining = prev.filter((s) => s.userId !== targetUserId);
-      AsyncStorage.setItem(STORAGE_KEYS.SPLITS, JSON.stringify(remaining)).catch(() => {});
       saveSplitsCloud(targetUserId, []).catch(() => {});
       return remaining;
     });
@@ -1794,9 +1537,34 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   };
 
-  const saveWorkoutLog = (newLog: Omit<WorkoutLog, 'id'>): WorkoutLog => {
+  const pendingWorkoutWrites = useRef(new Map<string, { pending: number; failed: boolean }>());
+  const persistWorkout = async (log: WorkoutLog, targetIds: string[], buddyLog?: WorkoutLog) => {
+    const owner = currentUser.id;
+    if (hydratedOwner.current !== owner) throw new Error('The workout account changed.');
+    const newLogs = buddyLog ? [log, buddyLog] : [log];
+    const withLog = (logs: WorkoutLog[]) => [
+      ...newLogs, ...logs.filter((entry) => !newLogs.some((newLog) => entry.id === newLog.id)),
+    ];
+    await persistAppData({ ...workspaceSnapshot, workoutLogs: withLog(workoutLogs) });
+    if (hydratedOwner.current !== owner) return;
+    setWorkoutLogs(withLog);
+    if (!targetIds.length || auth.currentUser?.uid !== owner) return;
+
+    void Promise.allSettled(targetIds.map(uid=>saveWorkoutLogCloud(uid,{...log,userId:uid})));
+
+  };
+
+  const saveWorkoutLog = async (
+    newLog: Omit<WorkoutLog, 'id'>,
+    id = `log_${Date.now()}`,
+    buddyLog?: WorkoutLog,
+  ): Promise<WorkoutLog> => {
     const isCoaching = managedClient !== null;
-    const targetUserIds: string[] = managedClient
+    const isBuddyWorkout = !isCoaching && newLog.userId === partnerUser?.id;
+    if (buddyLog && (isCoaching || isBuddyWorkout || buddyLog.userId !== partnerUser?.id)) {
+      throw new Error('The workout buddy changed.');
+    }
+    const targetUserIds: string[] = isBuddyWorkout ? [] : managedClient
       ? ([managedClient.id, managedClient.linkedUserId].filter(Boolean) as string[])
       : [activeUser.id];
     const primaryTargetId = managedClient
@@ -1805,18 +1573,14 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const log: WorkoutLog = {
       ...newLog,
-      id: `log_${Date.now()}`,
+      id,
       userId: primaryTargetId,
       loggedBy: isCoaching ? 'coach' : newLog.loggedBy || 'athlete',
       coachId: isCoaching ? currentUser.id : newLog.coachId,
       coachName: isCoaching ? coachProfile.name || currentUser.displayName : newLog.coachName,
     };
-    setWorkoutLogs((prev) => [log, ...prev]);
-
-    // Save to all target user IDs in Firestore (shadow client ID and linked athlete ID)
-    targetUserIds.forEach((uid) => {
-      saveWorkoutLogCloud(uid, { ...log, userId: uid }).catch(() => {});
-    });
+    await persistWorkout(log, targetUserIds, buddyLog);
+    if (hydratedOwner.current !== currentUser.id) return log;
 
     // If coaching, update client's lastSessionDate in roster
     if (isCoaching && managedClient) {
@@ -1832,7 +1596,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     // If athlete is logging on their own device and linked to a coach, update coach's client roster in real time
-    if (!isCoaching && linkedCoach?.coachId) {
+    if (!isCoaching && !isBuddyWorkout && linkedCoach?.coachId) {
       updateCoachClientLastSessionCloud(
         linkedCoach.coachId,
         activeUser.id,
@@ -1845,7 +1609,10 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const deleteWorkoutLog = (logId: string) => {
+    const log = workoutLogs.find((entry) => entry.id === logId);
+    if (!log) return;
     setWorkoutLogs((prev) => prev.filter((l) => l.id !== logId));
+    if (log.userId === partnerUser?.id) return;
     const targetUserIds: string[] = managedClient
       ? ([managedClient.id, managedClient.linkedUserId].filter(Boolean) as string[])
       : [activeUser.id];
@@ -2081,20 +1848,26 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   };
 
-  const linkPartnerUser = (partnerName: string, partnerEmail: string) => {
+  const linkPartnerUser = async (partnerName: string): Promise<UserProfile> => {
+    if (partnerUser) return partnerUser;
+    const owner = currentUser.id;
+    if (hydratedOwner.current !== owner || managedClient || !partnerName.trim()) {
+      throw new Error('Open your own workspace to add a workout buddy.');
+    }
     const newPartner: UserProfile = {
       id: `user_partner_${Date.now()}`,
-      displayName: partnerName,
-      email: partnerEmail,
+      displayName: partnerName.trim(),
+      email: '',
       activeWorkspaceId: activeWorkspace.id,
       macroTargets: { calories: 2200, protein: 150, carbs: 220, fats: 65 },
       createdAt: Date.now(),
     };
+    const workspace = { ...activeWorkspace, memberIds: [...activeWorkspace.memberIds, newPartner.id] };
+    await persistAppData({ ...workspaceSnapshot, partnerUser: newPartner, activeWorkspace: workspace });
+    if (hydratedOwner.current !== owner) throw new Error('The workout account changed.');
     setPartnerUser(newPartner);
-    setActiveWorkspace((prev) => ({
-      ...prev,
-      memberIds: [...prev.memberIds, newPartner.id],
-    }));
+    setActiveWorkspace(workspace);
+    return newPartner;
   };
 
   const updateCoachProfile = (profileUpdates: Partial<CoachProfile>) => {
@@ -2121,23 +1894,10 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
     setClients((prev) => [client, ...prev]);
 
-    // Save roster to cloud
-    saveClientsCloud(currentUser.id, [client, ...clients]).catch(() => {});
-
-    // Publish claim token to Cloud Firestore immediately so it is claimable cross-device right away
-    publishClientClaimCloud(
-      token,
-      client,
-      currentUser.id,
-      coachDisplayName,
-      coachProfile,
-      workoutLogs,
-      nutritionLogs,
-      bodyMetrics,
-      splits
-    ).catch((err) => {
-      console.warn('[UserWorkspaceContext] Auto-publish new client claim error:', err);
-    });
+    void saveClientsCloud(currentUser.id,[client,...clients])
+      .then(()=>callSecureBackend('registerShadowClient',{clientId:client.id}))
+      .then(()=>publishClientClaimCloud(token,client,currentUser.id,coachDisplayName,coachProfile,workoutLogs,nutritionLogs,bodyMetrics,splits))
+      .catch(()=>setCloudSyncStatus('error'));
 
     return client;
   };
@@ -2164,8 +1924,10 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const deleteClient = (clientId: string) => {
+  const deleteClient = async (clientId: string) => {
     const target = clients.find((c) => c.id === clientId);
+    if(target?.linkedUserId){try{await callSecureBackend('unlinkCoachClient',{athleteId:target.linkedUserId});}catch(error){Alert.alert('Client not removed',(error as Error).message);return;}}
+    if(!currentUser.id.startsWith('guest_')){try{await callSecureBackend('setCoachSeat',{clientId,active:false});}catch(error){Alert.alert('Client not removed',(error as Error).message);return;}}
     if (managedClient && managedClient.id === clientId) {
       stopManagingClient();
     }
@@ -2174,18 +1936,14 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       saveClientsCloud(currentUser.id, updated).catch(() => {});
       return updated;
     });
-    if (target?.linkedUserId) {
-      saveUserProfileCloud(target.linkedUserId, {
-        linkedCoach: null,
-        athleteMembership: { status: 'solo_active' },
-      }).catch(() => {});
-    }
+
   };
 
-  const unlinkClient = (clientId: string) => {
+  const unlinkClient = async (clientId: string) => {
     const target = clients.find((c) => c.id === clientId);
     if (!target) return;
 
+    try{await unlinkClientInCoachRosterCloud(currentUser.id,clientId,target.linkedUserId);}catch(error){Alert.alert('Client still linked',(error as Error).message);return;}
     const updatedClients = clients.map((c) =>
       c.id === clientId
         ? {
@@ -2199,7 +1957,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     );
     setClients(updatedClients);
     saveClientsCloud(currentUser.id, updatedClients).catch(() => {});
-    unlinkClientInCoachRosterCloud(currentUser.id, clientId, target.linkedUserId).catch(() => {});
+
     if (managedClient && managedClient.id === clientId) {
       setManagedClient({
         ...target,
@@ -2211,7 +1969,8 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const archiveClient = (clientId: string) => {
+  const archiveClient = async (clientId: string) => {
+    if(!currentUser.id.startsWith('guest_')){try{await callSecureBackend('setCoachSeat',{clientId,active:false});}catch(error){Alert.alert('Client not archived',(error as Error).message);return;}}
     setClients((prev) => {
       const updated = prev.map((c) => (c.id === clientId ? { ...c, status: 'archived' as const } : c));
       saveClientsCloud(currentUser.id, updated).catch(() => {});
@@ -2219,10 +1978,11 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   };
 
-  const graduateClient = (clientId: string) => {
+  const graduateClient = async (clientId: string) => {
     const target = clients.find((c) => c.id === clientId);
     if (!target) return;
 
+    if(target.linkedUserId){try{await callSecureBackend('unlinkCoachClient',{athleteId:target.linkedUserId});}catch(error){Alert.alert('Client still linked',(error as Error).message);return;}}
     const updatedClients = clients.map((c) =>
       c.id === clientId ? { ...c, status: 'graduated' as const } : c
     );
@@ -2231,15 +1991,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
 
     // If client is a linked app user, notify their profile in Cloud Firestore
     if (target.linkedUserId) {
-      saveUserProfileCloud(target.linkedUserId, {
-        athleteMembership: {
-          status: 'graduated',
-          coachName: coachProfile.name || currentUser.displayName || 'Coach',
-          coachBusiness: coachProfile.businessName,
-          graduatedAt: Date.now(),
-        },
-        linkedCoach: null,
-      }).catch(() => {});
+
     }
 
     // If client was linked to this session, transition their membership to graduated
@@ -2258,26 +2010,8 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     if (accountType === 'coach' || isCoachAccount) {
       return;
     }
-    const newMembership: AthleteMembership =
-      chosenPlan === 'trial'
-        ? {
-            status: 'solo_trial',
-            coachName: athleteMembership.coachName,
-            coachBusiness: athleteMembership.coachBusiness,
-            trialEndsAt: Date.now() + 7 * 86400000,
-          }
-        : {
-            status: 'free',
-            coachName: athleteMembership.coachName,
-            coachBusiness: athleteMembership.coachBusiness,
-          };
-
-    setAthleteMembership(newMembership);
-    saveUserProfileCloud(activeUser.id, {
-      athleteMembership: newMembership,
-      linkedCoach: null,
-    }).catch(() => {});
-    unlinkCoach();
+    setAthleteMembership({status:'free'});
+    void callSecureBackend('unlinkTrainer').then(()=>setLinkedCoach(null)).catch(error=>Alert.alert('Trainer link unchanged',error.message));
   };
 
   const unarchiveClient = (clientId: string): { success: boolean; needUpgrade?: boolean } => {
@@ -2288,6 +2022,7 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     setClients((prev) =>
       prev.map((c) => (c.id === clientId ? { ...c, status: 'active' } : c))
     );
+    if(!currentUser.id.startsWith('guest_'))void callSecureBackend('setCoachSeat',{clientId,active:true}).catch(error=>{setClients(previous=>previous.map(c=>c.id===clientId?{...c,status:'archived'}:c));Alert.alert('Client seat not restored',error.message);});
     return { success: true };
   };
 
@@ -2335,61 +2070,19 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       return { success: false, error: 'Coach accounts cannot link to another coach.' };
     }
 
+    const claimOwner = currentUser.id;
+    const isClaimOwner = () => hydratedOwner.current === claimOwner && auth.currentUser?.uid === claimOwner;
+    if (!isClaimOwner() || activeUser.id !== claimOwner) {
+      return { success: false, error: 'Sign in to your athlete account to use a trainer code.' };
+    }
+
     const { standardCode, pinOnly } = normalizeClaimCode(code);
     if (!pinOnly) {
       return { success: false, error: 'Please enter a valid invite PIN.' };
     }
 
-    // 1. First check if matched locally (useful when testing on same device)
-    const localMatch = clients.find(
-      (c) =>
-        c.claimToken &&
-        (normalizeClaimCode(c.claimToken.code).pinOnly === pinOnly ||
-          normalizeClaimCode(c.claimToken.code).standardCode === standardCode)
-    );
-
-    let claimRecord: ClientClaimCloudRecord | null = null;
-
-    if (localMatch && localMatch.claimToken) {
-      claimRecord = {
-        code: localMatch.claimToken.code,
-        rawPin: pinOnly,
-        coachId: currentUser.id,
-        coachName: coachProfile.name || currentUser.displayName || 'Coach',
-        coachBusiness: coachProfile.businessName,
-        coachInstagram: coachProfile.instagramHandle,
-        clientId: localMatch.id,
-        clientName: localMatch.name,
-        clientEmail: localMatch.email,
-        macroTargets: localMatch.macroTargets,
-        prescribedArchetypes: localMatch.prescribedArchetypes,
-        assignedSplitName: localMatch.assignedSplitName,
-        assignedRoutineIds: localMatch.assignedRoutineIds,
-        assignedRoutineNames: localMatch.assignedRoutineNames,
-        initialWorkouts: workoutLogs.filter((w) => w.userId === localMatch.id),
-        initialNutrition: nutritionLogs.filter((n) => n.userId === localMatch.id),
-        createdAt: Date.now(),
-        expiresAt: localMatch.claimToken.expiresAt,
-        claimed: false,
-      };
-
-      setClients((prev) =>
-        prev.map((c) =>
-          c.id === localMatch.id
-            ? {
-                ...c,
-                type: 'linked',
-                linkedUserId: activeUser.id,
-                linkedAt: Date.now(),
-                claimToken: undefined,
-              }
-            : c
-        )
-      );
-    } else {
-      // 2. Query Cloud Firestore
-      claimRecord = await lookupClientClaimCloud(code);
-    }
+    const localMatch = null as ClientProfile | null;
+    const claimRecord = await lookupClientClaimCloud(code);
 
     if (!claimRecord) {
       return {
@@ -2412,13 +2105,24 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       };
     }
 
-    // 3. Mark claimed in Cloud Firestore and sync coach's client roster
-    const claimingUser: UserProfile = {
-      ...activeUser,
-      id: auth.currentUser?.uid || activeUser.id,
-      email: auth.currentUser?.email || activeUser.email,
-    };
-    await executeClientClaimCloud(claimRecord, claimingUser);
+    if (!isClaimOwner()) return { success: false, error: 'Your account changed. Enter the code again.' };
+    await executeClientClaimCloud(claimRecord, currentUser);
+    if (!isClaimOwner()) return { success: false, error: 'Your account changed. Open the athlete profile to check the link.' };
+    if (localMatch) {
+      setClients((prev) =>
+        prev.map((c) =>
+          c.id === localMatch.id
+            ? {
+                ...c,
+                type: 'linked',
+                linkedUserId: activeUser.id,
+                linkedAt: Date.now(),
+                claimToken: undefined,
+              }
+            : c
+        )
+      );
+    }
 
     // 4. Update local athlete state:
     // a. Transfer past workout logs
@@ -2521,36 +2225,29 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     return { success: true, coachName: claimRecord.coachName };
   };
 
-  const upgradeTrainerSubscription = (tier: TrainerSubscriptionTier, customSeats?: number) => {
-    const config = TIER_CONFIGS[tier];
-    const seatLimit = tier === 'studio' && customSeats ? customSeats : config.seatLimit;
-    const priceZar =
-      tier === 'studio'
-        ? calculateCustomTierPrice(seatLimit)
-        : config.priceZar;
-    setTrainerSubscription({
-      tier,
-      seatLimit,
-      priceZar,
-      currency: 'ZAR',
-      billingPeriod: 'monthly',
-      status: 'active',
-      expiresAt: Date.now() + 30 * 86400000,
-    });
+  const applyVerifiedPaidAccess = async () => {
+    const owner = currentUser.id;
+    const access = await refreshPaidAccess();
+    if(hydratedOwner.current!==owner || auth.currentUser?.uid!==owner)return;
+    if(access && access.tier!=='athlete'){
+      const config=TIER_CONFIGS[access.tier];
+      setTrainerSubscription({...initialTrainerSubscription,tier:access.tier,seatLimit:access.seatLimit,priceZar:config.priceZar,status:'active',expiresAt:access.expiresAt});
+      setAccountTypeState('coach');setUserRoleState('coach');
+    }else{
+      setTrainerSubscription({...initialTrainerSubscription,status:'canceled',seatLimit:0});
+      if(access?.tier==='athlete'){setAccountTypeState('athlete');setUserRoleState('athlete');}
+      setAthleteMembership(access?.tier==='athlete'?{status:'solo_active'}:{status:'free'});
+    }
+  };
+  useEffect(()=>{
+    if(isHydrated&&auth.currentUser?.uid===currentUser.id)void applyVerifiedPaidAccess().catch(()=>{});
+  },[isHydrated,currentUser.id]);
+  const upgradeTrainerSubscription = (_tier: TrainerSubscriptionTier, _customSeats?:number) => {
+    void applyVerifiedPaidAccess().catch(error=>Alert.alert('Verification pending',error.message));
   };
 
-
   const reconcileDowngradeSeats = (newTier: TrainerSubscriptionTier, activeClientIds: string[]) => {
-    const config = TIER_CONFIGS[newTier];
-    setTrainerSubscription({
-      tier: newTier,
-      seatLimit: config.seatLimit,
-      priceZar: config.priceZar,
-      currency: 'ZAR',
-      billingPeriod: 'monthly',
-      status: 'active',
-      expiresAt: Date.now() + 30 * 86400000,
-    });
+    upgradeTrainerSubscription(newTier);
     setClients((prev) =>
       prev.map((c) => ({
         ...c,
@@ -2567,21 +2264,21 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     return workoutLogs.filter((l) => validUserIds.has(l.userId));
   };
 
-  const logClientWorkout = (clientId: string, logData: Omit<WorkoutLog, 'id'>): WorkoutLog => {
+  const logClientWorkout = async (clientId: string, logData: Omit<WorkoutLog, 'id'>, id = `log_client_${Date.now()}`): Promise<WorkoutLog> => {
     const targetClient = clients.find((c) => c.id === clientId);
     const targetUserId = targetClient?.linkedUserId || clientId;
 
     const newLog: WorkoutLog = {
       ...logData,
-      id: `log_client_${Date.now()}`,
+      id,
       userId: targetUserId,
       loggedBy: 'coach',
       coachId: currentUser.id,
       coachName: coachProfile.name || currentUser.displayName,
     };
 
-    setWorkoutLogs((prev) => [newLog, ...prev]);
-    saveWorkoutLogCloud(newLog.userId, newLog).catch(() => {});
+    await persistWorkout(newLog, [newLog.userId]);
+    if (hydratedOwner.current !== currentUser.id) return newLog;
 
     // Update client's lastSessionDate and sync coach roster to cloud
     setClients((prev) => {
@@ -2783,13 +2480,13 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       linkedAt: Date.now(),
     };
     setLinkedCoach(newLinkedCoach);
-    saveUserProfileCloud(activeUser.id, { linkedCoach: newLinkedCoach }).catch(() => {});
+    // Link authorization and profile updates are performed by the secure redemption callable.
   };
 
   const unlinkCoach = () => {
     const previousCoachId = linkedCoach?.coachId;
     setLinkedCoach(null);
-    unlinkCoachCloud(activeUser.id, previousCoachId).catch(() => {});
+    void callSecureBackend('unlinkTrainer').catch(()=>setCloudSyncStatus('error'));
   };
 
   const clearAllData = async () => {
@@ -2821,143 +2518,40 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const resetAllDataToDefaults = async () => {
-    await clearStoredAppData();
-    setCurrentUser(initialCurrentUser);
-    setPartnerUser(initialPartnerUser);
-    setActiveUser(initialCurrentUser);
-    setActiveWorkspace(initialWorkspace);
-    setExercises(DEFAULT_EXERCISES);
-    setSplits(initialSplits);
-    setWorkoutLogs(initialWorkoutLogs);
-    setNutritionLogs(initialNutritionLogs);
-    setBodyMetrics(initialBodyMetrics);
-    setUserSchedules({
-      user_alex: initialAlexSchedule,
-      user_jordan: initialJordanSchedule,
-    });
-    setUserRole('athlete');
-    setCoachProfile(initialCoachProfile);
-    setClients(initialClients);
-    setPrescribedArchetypes(initialPrescribedArchetypes);
-    setLinkedCoach(null);
-    setTrainerSubscription(initialTrainerSubscription);
-  };
-
-  const initializeBrandNewUser = async (
-    displayName: string,
-    role: UserRole = 'athlete',
-    targetAccountType: AccountType = 'athlete'
-  ) => {
-    const cleanName = displayName.trim() || 'Lifter';
-    const newUid = auth?.currentUser?.uid || firebaseUser?.uid || `user_${Date.now()}`;
-    const cleanUser: UserProfile = {
-      id: newUid,
-      displayName: cleanName,
-      email: auth?.currentUser?.email || firebaseUser?.email || '',
-      activeWorkspaceId: `ws_${newUid}`,
-      macroTargets: { calories: 2200, protein: 160, carbs: 220, fats: 70 },
-      weightUnit: 'kg',
-      createdAt: Date.now(),
-    };
-
-    setCurrentUser(cleanUser);
-    setActiveUser(cleanUser);
+    await clearStoredAppData(currentUser.id);
     setPartnerUser(null);
-    setActiveWorkspace({
-      id: `ws_${newUid}`,
-      name: `${cleanName}'s Workspace`,
-      ownerId: newUid,
-      memberIds: [newUid],
-    });
-
-    // Zero logged data & clean splits
+    setActiveUser(currentUser);
+    setManagedClient(null);
+    setIsViewingPersonalProfile(false);
+    setExercises(DEFAULT_EXERCISES);
     setSplits([]);
-    await AsyncStorage.setItem(`@ripped_presets_seeded_v3_${newUid}`, 'true');
     setWorkoutLogs([]);
     setNutritionLogs([]);
     setBodyMetrics([]);
     setUserSchedules({});
-
-    // Zero coach data / zero clients / zero linked coaches
-    setLinkedCoach(null);
+    setUserRole(accountType === 'coach' ? 'coach' : 'athlete');
+    setCoachProfile({ name: currentUser.displayName, businessName: '', instagramHandle: '' });
     setClients([]);
     setPrescribedArchetypes([]);
-    setCoachProfile({
-      name: cleanName,
-      businessName: '',
-      instagramHandle: '',
-    });
-
-    setUserRoleState(role);
-    setAccountTypeState(targetAccountType);
-
-    if (targetAccountType === 'coach') {
-      setTrainerSubscription(initialTrainerSubscription);
-      setAthleteMembership({ status: 'free' });
-    } else {
-      setTrainerSubscription({
-        tier: 'starter',
-        seatLimit: 0,
-        priceZar: 0,
-        currency: 'ZAR',
-        billingPeriod: 'monthly',
-        status: 'canceled',
-      });
-      setAthleteMembership({
-        status: targetAccountType === 'client' ? 'sponsored_by_coach' : 'solo_active',
-      });
-    }
-
-    // Persist empty state immediately so fresh account never shows demo artifacts
-    await persistUserData(newUid, {
-      workoutLogs: [],
-      nutritionLogs: [],
-      bodyMetrics: [],
-      userRole: role,
-    });
-
-    await persistAppData({
-      currentUser: cleanUser,
-      partnerUser: null,
-      activeUserId: newUid,
-      activeWorkspace: {
-        id: `ws_${newUid}`,
-        name: `${cleanName}'s Workspace`,
-        ownerId: newUid,
-        memberIds: [newUid],
-      },
-      exercises,
-      splits: [],
-      workoutLogs: [],
-      nutritionLogs: [],
-      bodyMetrics: [],
-      userSchedules: {},
-      userRole: role,
-      accountType: targetAccountType,
-      coachProfile: {
-        name: cleanName,
-        businessName: '',
-        instagramHandle: '',
-      },
-      clients: [],
-      prescribedArchetypes: [],
-      linkedCoach: null,
-      trainerSubscription:
-        targetAccountType === 'coach'
-          ? initialTrainerSubscription
-          : {
-              tier: 'starter',
-              seatLimit: 0,
-              priceZar: 0,
-              currency: 'ZAR',
-              billingPeriod: 'monthly',
-              status: 'canceled',
-            },
-      athleteMembership: {
-        status: targetAccountType === 'client' ? 'sponsored_by_coach' : 'solo_active',
-      },
-    });
+    setCoachMeals([]);
+    setLinkedCoach(null);
+    setTrainerSubscription(initialTrainerSubscription);
   };
+
+  useEffect(() => {
+    if (!pendingTrainerCode || !isHydrated || firebaseUser?.isAnonymous || !firebaseUser) return;
+    const uid = firebaseUser.uid;
+    setPendingTrainerCode(null);
+    void (async () => {
+      const session = await getActiveSession();
+      if (session?.uid !== uid || hydratedOwner.current !== uid) return;
+      await setActiveSession({ ...session, trainerCode: undefined });
+      const result = await claimClientWithCode(pendingTrainerCode);
+      if (!result.success && hydratedOwner.current === uid) {
+        Alert.alert('Trainer code', result.error || 'You can try the code again in Settings.');
+      }
+    })().catch(() => {});
+  }, [pendingTrainerCode, isHydrated, firebaseUser]);
 
   return (
     <UserWorkspaceContext.Provider
@@ -3048,7 +2642,6 @@ export const UserWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         linkPartnerUser,
         clearAllData,
         resetAllDataToDefaults,
-        initializeBrandNewUser,
         firebaseUser,
         isAuthReady,
         cloudSyncStatus,

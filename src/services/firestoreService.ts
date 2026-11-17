@@ -1,3 +1,5 @@
+import { callSecureBackend } from './secureBackend';
+import { queueCloudWrite } from '../utils/cloudSyncQueue';
 import {
   doc,
   collection,
@@ -47,9 +49,10 @@ export async function saveUserProfileCloud(
 ): Promise<void> {
   try {
     const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, sanitizeForFirestore({ ...profile, updatedAt: Date.now() }), { merge: true });
+    await queueCloudWrite(['users',userId], sanitizeForFirestore({ ...profile, updatedAt: Date.now() }), true);
   } catch (err) {
     console.warn('[Firestore] Error saving user profile to cloud (cached locally):', err);
+    throw err;
   }
 }
 
@@ -76,12 +79,9 @@ export async function saveWorkoutLogCloud(
   userId: string,
   workoutLog: WorkoutLog
 ): Promise<void> {
-  try {
-    const workoutRef = doc(db, 'users', userId, 'workouts', workoutLog.id);
-    await setDoc(workoutRef, { ...workoutLog, updatedAt: Date.now() });
-  } catch (err) {
-    console.warn('[Firestore] Error saving workout log (cached locally):', err);
-  }
+  const workoutRef = doc(db, 'users', userId, 'workouts', workoutLog.id);
+  const payload = JSON.parse(JSON.stringify({ ...workoutLog, updatedAt: Date.now() }));
+  await queueCloudWrite(['users',userId,'workouts',workoutLog.id],payload);
 }
 
 export async function deleteWorkoutLogCloud(
@@ -90,9 +90,10 @@ export async function deleteWorkoutLogCloud(
 ): Promise<void> {
   try {
     const workoutRef = doc(db, 'users', userId, 'workouts', logId);
-    await deleteDoc(workoutRef);
+    await queueCloudWrite(['users',userId,'workouts',logId],undefined,false,true);
   } catch (err) {
     console.warn('[Firestore] Error deleting workout log:', err);
+    throw err;
   }
 }
 
@@ -105,6 +106,7 @@ export function subscribeToWorkoutLogs(
     return onSnapshot(
       workoutsColl,
       (snapshot) => {
+        if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
         const logs: WorkoutLog[] = [];
         snapshot.forEach((d) => {
           logs.push(d.data() as WorkoutLog);
@@ -134,9 +136,10 @@ export async function saveNutritionLogCloud(
   try {
     // Key by date to ensure unique daily entries
     const logRef = doc(db, 'users', userId, 'nutrition', nutritionLog.date);
-    await setDoc(logRef, { ...nutritionLog, updatedAt: Date.now() });
+    await queueCloudWrite(['users',userId,'nutrition',nutritionLog.date],{ ...nutritionLog, updatedAt: Date.now() });
   } catch (err) {
     console.warn('[Firestore] Error saving nutrition log (cached locally):', err);
+    throw err;
   }
 }
 
@@ -149,13 +152,14 @@ export async function deleteNutritionMealCloud(
   try {
     const updatedMeals = existingLog.meals.filter((m) => m.id !== mealId);
     const logRef = doc(db, 'users', userId, 'nutrition', date);
-    await setDoc(logRef, {
+    await queueCloudWrite(['users',userId,'nutrition',date], {
       ...existingLog,
       meals: updatedMeals,
       updatedAt: Date.now(),
     });
   } catch (err) {
     console.warn('[Firestore] Error deleting nutrition meal:', err);
+    throw err;
   }
 }
 
@@ -168,6 +172,7 @@ export function subscribeToNutritionLogs(
     return onSnapshot(
       nutritionColl,
       (snapshot) => {
+        if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
         const logs: NutritionLog[] = [];
         snapshot.forEach((d) => {
           logs.push(d.data() as NutritionLog);
@@ -195,9 +200,10 @@ export async function saveBodyMetricCloud(
 ): Promise<void> {
   try {
     const metricRef = doc(db, 'users', userId, 'bodyMetrics', metric.id);
-    await setDoc(metricRef, { ...metric, updatedAt: Date.now() });
+    await queueCloudWrite(['users',userId,'bodyMetrics',metric.id],{ ...metric, updatedAt: Date.now() });
   } catch (err) {
     console.warn('[Firestore] Error saving body metric (cached locally):', err);
+    throw err;
   }
 }
 
@@ -207,9 +213,10 @@ export async function deleteBodyMetricCloud(
 ): Promise<void> {
   try {
     const metricRef = doc(db, 'users', userId, 'bodyMetrics', metricId);
-    await deleteDoc(metricRef);
+    await queueCloudWrite(['users',userId,'bodyMetrics',metricId],undefined,false,true);
   } catch (err) {
     console.warn('[Firestore] Error deleting body metric:', err);
+    throw err;
   }
 }
 
@@ -222,6 +229,7 @@ export function subscribeToBodyMetrics(
     return onSnapshot(
       metricsColl,
       (snapshot) => {
+        if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
         const metrics: BodyMetric[] = [];
         snapshot.forEach((d) => {
           metrics.push(d.data() as BodyMetric);
@@ -249,9 +257,10 @@ export async function saveSplitsCloud(
 ): Promise<void> {
   try {
     const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, sanitizeForFirestore({ splits, updatedAt: Date.now() }), { merge: true });
+    await queueCloudWrite(['users',userId], sanitizeForFirestore({ splits, updatedAt: Date.now() }), true);
   } catch (err) {
     console.warn('[Firestore] Error saving splits (cached locally):', err);
+    throw err;
   }
 }
 
@@ -265,9 +274,10 @@ export async function saveCoachProfileCloud(
 ): Promise<void> {
   try {
     const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, sanitizeForFirestore({ coachProfile, updatedAt: Date.now() }), { merge: true });
+    await queueCloudWrite(['users',userId], sanitizeForFirestore({ coachProfile, updatedAt: Date.now() }), true);
   } catch (err) {
     console.warn('[Firestore] Error saving coach profile:', err);
+    throw err;
   }
 }
 
@@ -277,9 +287,10 @@ export async function saveClientsCloud(
 ): Promise<void> {
   try {
     const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, sanitizeForFirestore({ clients, updatedAt: Date.now() }), { merge: true });
+    await queueCloudWrite(['users',userId], sanitizeForFirestore({ clients, updatedAt: Date.now() }), true);
   } catch (err) {
     console.warn('[Firestore] Error saving clients to cloud:', err);
+    throw err;
   }
 }
 
@@ -289,9 +300,10 @@ export async function savePrescribedArchetypesCloud(
 ): Promise<void> {
   try {
     const userRef = doc(db, 'users', userId);
-    await setDoc(userRef, sanitizeForFirestore({ prescribedArchetypes: archetypes, updatedAt: Date.now() }), { merge: true });
+    await queueCloudWrite(['users',userId], sanitizeForFirestore({ prescribedArchetypes: archetypes, updatedAt: Date.now() }), true);
   } catch (err) {
     console.warn('[Firestore] Error saving prescribed archetypes:', err);
+    throw err;
   }
 }
 
@@ -308,6 +320,7 @@ export function subscribeToUserProfile(
     return onSnapshot(
       userRef,
       (snap) => {
+        if (snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
         if (snap.exists()) {
           onUpdate(snap.data());
         }
@@ -331,6 +344,7 @@ export function subscribeToCoachData(
     return onSnapshot(
       coachRef,
       (snap) => {
+        if (snap.metadata.fromCache || snap.metadata.hasPendingWrites) return;
         if (snap.exists()) {
           const data = snap.data();
           onUpdate({
@@ -359,108 +373,7 @@ export function subscribeToCoachData(
  * - Sets athleteMembership status to 'graduated' or 'solo_active'
  * - Updates the coach's roster document so the client status is marked 'graduated'
  */
-export async function unlinkCoachCloud(
-  athleteUserId: string,
-  coachId?: string,
-  targetMembershipStatus: 'graduated' | 'solo_active' | 'solo_trial' | 'free' = 'solo_active'
-): Promise<void> {
-  try {
-    const athleteRef = doc(db, 'users', athleteUserId);
-    await setDoc(
-      athleteRef,
-      sanitizeForFirestore({
-        linkedCoach: null,
-        athleteMembership: { status: targetMembershipStatus },
-        updatedAt: Date.now(),
-      }),
-      { merge: true }
-    );
-  } catch (err) {
-    console.warn('[Firestore] Error unlinking coach on athlete profile:', err);
-  }
-
-  if (coachId) {
-    try {
-      const coachRef = doc(db, 'users', coachId);
-      const snap = await getDoc(coachRef);
-      if (snap.exists()) {
-        const coachData = snap.data();
-        const currentClients: ClientProfile[] = Array.isArray(coachData?.clients) ? coachData.clients : [];
-        let changed = false;
-        const updatedClients = currentClients.map((c) => {
-          if (c.linkedUserId === athleteUserId || c.id === athleteUserId) {
-            changed = true;
-            return {
-              ...c,
-              status: 'graduated' as const,
-            };
-          }
-          return c;
-        });
-        if (changed) {
-          await setDoc(
-            coachRef,
-            sanitizeForFirestore({ clients: updatedClients, updatedAt: Date.now() }),
-            { merge: true }
-          );
-        }
-      }
-    } catch (err) {
-      console.warn('[Firestore] Error updating coach roster on unlink:', err);
-    }
-  }
-}
-
-/**
- * Reverts a linked client back to a shadow client in the coach's roster,
- * and clears the coach link on the athlete's document.
- */
-export async function unlinkClientInCoachRosterCloud(
-  coachUserId: string,
-  clientId: string,
-  linkedUserId?: string
-): Promise<void> {
-  try {
-    const coachRef = doc(db, 'users', coachUserId);
-    const snap = await getDoc(coachRef);
-    if (snap.exists()) {
-      const coachData = snap.data();
-      const currentClients: ClientProfile[] = Array.isArray(coachData?.clients) ? coachData.clients : [];
-      const updatedClients = currentClients.map((c) =>
-        c.id === clientId
-          ? {
-              ...c,
-              type: 'shadow' as const,
-              linkedUserId: undefined,
-              linkedAt: undefined,
-              claimToken: undefined,
-            }
-          : c
-      );
-      await setDoc(
-        coachRef,
-        sanitizeForFirestore({ clients: updatedClients, updatedAt: Date.now() }),
-        { merge: true }
-      );
-    }
-  } catch (err) {
-    console.warn('[Firestore] Error unlinking client in coach roster:', err);
-  }
-
-  if (linkedUserId) {
-    try {
-      const athleteRef = doc(db, 'users', linkedUserId);
-      await setDoc(
-        athleteRef,
-        sanitizeForFirestore({
-          linkedCoach: null,
-          athleteMembership: { status: 'solo_active' },
-          updatedAt: Date.now(),
-        }),
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('[Firestore] Error unlinking athlete on client document:', err);
-    }
-  }
+export async function unlinkCoachCloud(athleteUserId:string,coachId?:string,targetMembershipStatus?:string):Promise<void>{await callSecureBackend('unlinkTrainer');}
+export async function unlinkClientInCoachRosterCloud(coachUserId:string,clientId:string,linkedUserId?:string):Promise<void>{
+ if(linkedUserId)await callSecureBackend('unlinkCoachClient',{athleteId:linkedUserId});
 }

@@ -2,9 +2,9 @@
  * Evidence-Based Daily Protein Target Recommendation Engine
  * Based on sports nutrition meta-analyses (Schoenfeld & Phillips, Morton et al.)
  * Muscle protein synthesis (MPS) plateaus within the 1.6–2.2 g/kg range:
- * - Minimum for Max Growth: 1.6 g/kg - Baseline threshold where hypertrophy benefits plateau.
- * - Optimal High Ceiling: 2.0 g/kg - Recommended target covering virtually all individual variance.
- * - Upper Limit of Return: 2.2 g/kg - Ceiling of diminishing returns; surplus is oxidized for energy.
+ * - Lower reference: 1.6 g/kg - A general research reference for resistance training.
+ * - Middle reference: 2.0 g/kg - A reference estimate, not an individual prescription.
+ * - Upper reference: 2.2 g/kg - Higher intake is not necessarily more beneficial.
  */
 
 export type ProteinTierId = 'min' | 'optimal' | 'upper';
@@ -45,29 +45,29 @@ export function calculateProteinTargets(weightKg: number | null | undefined): Pr
   const tiers: ProteinTier[] = [
     {
       id: 'min',
-      name: 'Minimum for Max Growth',
+      name: 'Lower reference',
       multiplier: PROTEIN_MULTIPLIERS.MIN,
       multiplierLabel: '1.6 g/kg',
       grams: minForMaxGrowth,
-      subtitle: 'Baseline threshold where hypertrophy benefits plateau.',
+      subtitle: 'A general research reference for resistance training.',
       isRecommended: false,
     },
     {
       id: 'optimal',
-      name: 'Optimal High Ceiling',
+      name: 'Middle reference',
       multiplier: PROTEIN_MULTIPLIERS.OPTIMAL,
       multiplierLabel: '2.0 g/kg',
       grams: optimalCeiling,
-      subtitle: 'Recommended target covering virtually all individual variance.',
+      subtitle: 'A reference estimate, not an individual prescription.',
       isRecommended: true,
     },
     {
       id: 'upper',
-      name: 'Upper Limit of Return',
+      name: 'Upper reference',
       multiplier: PROTEIN_MULTIPLIERS.UPPER,
       multiplierLabel: '2.2 g/kg',
       grams: upperLimit,
-      subtitle: 'Ceiling of diminishing returns; surplus is oxidized for energy.',
+      subtitle: 'Higher intake is not necessarily more beneficial.',
       isRecommended: false,
     },
   ];

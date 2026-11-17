@@ -1,3 +1,4 @@
+import { AccountConsent } from '../src/components/auth/AccountConsent';
 import React, { useState } from 'react';
 import {
   View,
@@ -12,31 +13,24 @@ import {
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Redirect, useRouter } from 'expo-router';
+import { Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
 import { signInWithEmail, registerWithEmail, sendPasswordReset } from '../src/services/authService';
 import { UserRole, AccountType } from '../src/types/trainer';
 import { WeightUnit } from '../src/types';
-import { getActiveSession } from '../src/utils/storage';
 import { QRCodeScannerModal } from '../src/components/QRCodeScannerModal';
 
 export default function Index() {
-  const router = useRouter();
   const {
     firebaseUser,
     isAuthReady,
     userRole,
-    setUserRole,
-    setAccountType,
-    updateWeightUnit,
     continueAsGuest,
-    syncAllToCloud,
-    claimClientWithCode,
-    initializeBrandNewUser,
   } = useUserWorkspace();
 
+  const [acceptedTerms,setAcceptedTerms] = useState(false);
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [signupPlan, setSignupPlan] = useState<AccountType>('athlete');
   const [trainerCodeInput, setTrainerCodeInput] = useState('');
@@ -75,6 +69,7 @@ export default function Index() {
   }
 
   const handleSubmit = async () => {
+    if(mode==='signup'&&!acceptedTerms){setErrorMessage('Please confirm the terms and privacy information before creating an account.');return;}
     if (!email.trim() || !password.trim()) {
       setErrorMessage('Please enter both email and password.');
       return;
@@ -89,56 +84,16 @@ export default function Index() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
-      const targetRole: UserRole = signupPlan === 'coach' ? 'coach' : 'athlete';
-      const targetAccountType: AccountType = signupPlan;
-
       if (mode === 'signup') {
-        const cleanName = displayName.trim() || email.split('@')[0];
         await registerWithEmail(
-          email,
-          password,
-          cleanName,
-          targetRole,
-          targetAccountType
-        );
-        await initializeBrandNewUser(cleanName, targetRole, targetAccountType);
-        updateWeightUnit(preferredUnit);
-
-        // If client VIP with a trainer invite code, auto-claim
-        if (signupPlan === 'client' && trainerCodeInput.trim()) {
-          const claimRes = await claimClientWithCode(trainerCodeInput.trim());
-          if (!claimRes.success) {
-            Alert.alert(
-              'Trainer Invite Code Notice',
-              claimRes.error || 'Could not verify that PIN right now. You can enter it anytime in Settings.'
-            );
-          }
-        }
-
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert(
-          'Account Created! 🚀',
-          `Welcome to RIPPED, ${cleanName}! We've sent a verification link to ${email.trim()}. You can verify anytime in your Profile settings.`,
-          [{ text: "Let's Train!" }]
+          email, password, displayName, signupPlan === 'coach' ? 'coach' : 'athlete',
+          signupPlan, preferredUnit, signupPlan === 'client' ? trainerCodeInput.trim() : undefined,
         );
       } else {
-        await signInWithEmail(email, password, targetRole, targetAccountType);
-        const session = await getActiveSession();
-        const finalRole = session?.userRole || targetRole;
-        const finalAccountType = session?.accountType || targetAccountType;
-        setUserRole(finalRole);
-        setAccountType(finalAccountType);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        await signInWithEmail(email, password);
       }
-      await syncAllToCloud().catch(() => {});
-
-      const session = await getActiveSession();
-      const finalRole = session?.userRole || targetRole;
-      if (finalRole === 'coach') {
-        router.replace('/(tabs)/clients');
-      } else {
-        router.replace('/(tabs)/workouts');
-      }
+      setPassword('');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
       console.warn('[AuthScreen] Authentication failed:', err);
       const code = err?.code || '';
@@ -181,25 +136,14 @@ export default function Index() {
     }
   };
 
-  const handleGuest = async () => {
+  const handleGuest = async (role: UserRole = 'athlete') => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setLoading(true);
+    setErrorMessage('');
     try {
-      const targetRole: UserRole = signupPlan === 'coach' ? 'coach' : 'athlete';
-      const targetAccountType: AccountType = signupPlan;
-      setUserRole(targetRole);
-      setAccountType(targetAccountType);
-      await continueAsGuest(targetRole, targetAccountType);
-      if (signupPlan === 'client' && trainerCodeInput.trim()) {
-        await claimClientWithCode(trainerCodeInput.trim()).catch(() => {});
-      }
-      if (targetRole === 'coach') {
-        router.replace('/(tabs)/clients');
-      } else {
-        router.replace('/(tabs)/workouts');
-      }
-    } catch (err) {
-      console.warn('Guest login failed:', err);
+      await continueAsGuest(role, role);
+    } catch {
+      setErrorMessage('Could not open your guest workspace. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -242,6 +186,8 @@ export default function Index() {
                   setMode('signin');
                   setErrorMessage('');
                 }}
+                accessibilityRole="tab"
+                accessibilityLabel="Switch to Log In"
                 className={`flex-1 py-2.5 items-center rounded-lg ${
                   mode === 'signin' ? 'bg-accent-cyan' : ''
                 }`}
@@ -261,6 +207,8 @@ export default function Index() {
                   setMode('signup');
                   setErrorMessage('');
                 }}
+                accessibilityRole="tab"
+                accessibilityLabel="Switch to Create Account"
                 className={`flex-1 py-2.5 items-center rounded-lg ${
                   mode === 'signup' ? 'bg-accent-cyan' : ''
                 }`}
@@ -275,124 +223,132 @@ export default function Index() {
               </TouchableOpacity>
             </View>
 
-            {/* Account Plan Selector */}
-            <View className="mb-5">
-              <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
-                Choose Subscription Plan:
-              </Text>
-              <View className="space-y-2">
-                {/* 1. Solo Athlete */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setSignupPlan('athlete');
-                  }}
-                  className={`p-3 rounded-2xl border ${
-                    signupPlan === 'athlete'
-                      ? 'bg-cyan-500/15 border-cyan-400'
-                      : 'bg-zinc-900/90 border-zinc-800'
-                  }`}
-                >
-                  <View className="flex-row items-center justify-between mb-1">
-                    <View className="flex-row items-center space-x-1.5">
-                      <Ionicons
-                        name="barbell"
-                        size={15}
-                        color={signupPlan === 'athlete' ? '#06B6D4' : '#71717A'}
-                      />
-                      <Text
-                        className={`text-xs font-black ${
-                          signupPlan === 'athlete' ? 'text-white' : 'text-zinc-400'
-                        }`}
-                      >
-                        Solo Athlete
-                      </Text>
+            {/* Account Plan Selector - Only shown during Create Account */}
+            {mode === 'signup' && (
+              <View className="mb-5">
+                <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
+                  Choose account type:
+                </Text>
+                <View className="space-y-2">
+                  {/* 1. Solo Athlete */}
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSignupPlan('athlete');
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Solo athlete account. Store subscription available after sign-up."
+                    className={`p-3 rounded-2xl border ${
+                      signupPlan === 'athlete'
+                        ? 'bg-cyan-500/15 border-cyan-400'
+                        : 'bg-zinc-900/90 border-zinc-800'
+                    }`}
+                  >
+                    <View className="flex-row items-center justify-between mb-1">
+                      <View className="flex-row items-center space-x-1.5">
+                        <Ionicons
+                          name="barbell"
+                          size={15}
+                          color={signupPlan === 'athlete' ? '#06B6D4' : '#71717A'}
+                        />
+                        <Text
+                          className={`text-xs font-black ${
+                            signupPlan === 'athlete' ? 'text-white' : 'text-zinc-400'
+                          }`}
+                        >
+                          Solo Athlete
+                        </Text>
+                      </View>
+                      <View className="bg-cyan-500/20 px-2 py-0.5 rounded">
+                        <Text className="text-[9px] font-extrabold text-cyan-400">Store plan</Text>
+                      </View>
                     </View>
-                    <View className="bg-cyan-500/20 px-2 py-0.5 rounded">
-                      <Text className="text-[9px] font-extrabold text-cyan-400">R59/mo</Text>
-                    </View>
-                  </View>
-                  <Text className="text-[10px] text-zinc-400 leading-snug">
-                    Independent lifter • Custom splits, 1RM progressive overload & macros
-                  </Text>
-                </TouchableOpacity>
+                    <Text className="text-[10px] text-zinc-400 leading-snug">
+                      Independent lifter • Custom splits, 1RM progressive overload & macros
+                    </Text>
+                  </TouchableOpacity>
 
-                {/* 2. Client (Free VIP Pass) */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setSignupPlan('client');
-                  }}
-                  className={`p-3 rounded-2xl border ${
-                    signupPlan === 'client'
-                      ? 'bg-emerald-500/15 border-emerald-400'
-                      : 'bg-zinc-900/90 border-zinc-800'
-                  }`}
-                >
-                  <View className="flex-row items-center justify-between mb-1">
-                    <View className="flex-row items-center space-x-1.5">
-                      <Ionicons
-                        name="gift"
-                        size={15}
-                        color={signupPlan === 'client' ? '#10B981' : '#71717A'}
-                      />
-                      <Text
-                        className={`text-xs font-black ${
-                          signupPlan === 'client' ? 'text-white' : 'text-zinc-400'
-                        }`}
-                      >
-                        Client (Free VIP Pass)
-                      </Text>
+                  {/* 2. Client (Free VIP Pass) */}
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSignupPlan('client');
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Client Free VIP Pass, 100% Free"
+                    className={`p-3 rounded-2xl border ${
+                      signupPlan === 'client'
+                        ? 'bg-emerald-500/15 border-emerald-400'
+                        : 'bg-zinc-900/90 border-zinc-800'
+                    }`}
+                  >
+                    <View className="flex-row items-center justify-between mb-1">
+                      <View className="flex-row items-center space-x-1.5">
+                        <Ionicons
+                          name="gift"
+                          size={15}
+                          color={signupPlan === 'client' ? '#10B981' : '#71717A'}
+                        />
+                        <Text
+                          className={`text-xs font-black ${
+                            signupPlan === 'client' ? 'text-white' : 'text-zinc-400'
+                          }`}
+                        >
+                          Client (Free VIP Pass)
+                        </Text>
+                      </View>
+                      <View className="bg-emerald-500/20 px-2 py-0.5 rounded">
+                        <Text className="text-[9px] font-extrabold text-emerald-400">100% FREE</Text>
+                      </View>
                     </View>
-                    <View className="bg-emerald-500/20 px-2 py-0.5 rounded">
-                      <Text className="text-[9px] font-extrabold text-emerald-400">100% FREE</Text>
-                    </View>
-                  </View>
-                  <Text className="text-[10px] text-zinc-400 leading-snug">
-                    My trainer uses RIPPED • Free sponsored access under coach seat
-                  </Text>
-                </TouchableOpacity>
+                    <Text className="text-[10px] text-zinc-400 leading-snug">
+                      My trainer uses RIPPED • Free sponsored access under coach seat
+                    </Text>
+                  </TouchableOpacity>
 
-                {/* 3. Personal Trainer Pro */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    Haptics.selectionAsync();
-                    setSignupPlan('coach');
-                  }}
-                  className={`p-3 rounded-2xl border ${
-                    signupPlan === 'coach'
-                      ? 'bg-amber-500/15 border-amber-400'
-                      : 'bg-zinc-900/90 border-zinc-800'
-                  }`}
-                >
-                  <View className="flex-row items-center justify-between mb-1">
-                    <View className="flex-row items-center space-x-1.5">
-                      <Ionicons
-                        name="clipboard"
-                        size={15}
-                        color={signupPlan === 'coach' ? '#F59E0B' : '#71717A'}
-                      />
-                      <Text
-                        className={`text-xs font-black ${
-                          signupPlan === 'coach' ? 'text-white' : 'text-zinc-400'
-                        }`}
-                      >
-                        Personal Trainer Pro
-                      </Text>
+                  {/* 3. Personal Trainer Pro */}
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      Haptics.selectionAsync();
+                      setSignupPlan('coach');
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Personal trainer account. Store subscription available after sign-up."
+                    className={`p-3 rounded-2xl border ${
+                      signupPlan === 'coach'
+                        ? 'bg-amber-500/15 border-amber-400'
+                        : 'bg-zinc-900/90 border-zinc-800'
+                    }`}
+                  >
+                    <View className="flex-row items-center justify-between mb-1">
+                      <View className="flex-row items-center space-x-1.5">
+                        <Ionicons
+                          name="clipboard"
+                          size={15}
+                          color={signupPlan === 'coach' ? '#F59E0B' : '#71717A'}
+                        />
+                        <Text
+                          className={`text-xs font-black ${
+                            signupPlan === 'coach' ? 'text-white' : 'text-zinc-400'
+                          }`}
+                        >
+                          Personal Trainer Pro
+                        </Text>
+                      </View>
+                      <View className="bg-amber-500/20 px-2 py-0.5 rounded">
+                        <Text className="text-[9px] font-extrabold text-amber-400">Store plans</Text>
+                      </View>
                     </View>
-                    <View className="bg-amber-500/20 px-2 py-0.5 rounded">
-                      <Text className="text-[9px] font-extrabold text-amber-400">From R199/mo</Text>
-                    </View>
-                  </View>
-                  <Text className="text-[10px] text-zinc-400 leading-snug">
-                    Coach & PT suite • Client CRM, shadow logging, diet prescriptions
-                  </Text>
-                </TouchableOpacity>
+                    <Text className="text-[10px] text-zinc-400 leading-snug">
+                      Coach & PT suite • Client CRM, shadow logging, diet prescriptions
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-            </View>
+            )}
 
             {/* Trainer Code Input for Client VIP */}
             {mode === 'signup' && signupPlan === 'client' && (
@@ -409,6 +365,8 @@ export default function Index() {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       setShowScanner(true);
                     }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Scan trainer QR code"
                     className="flex-row items-center space-x-1 bg-emerald-500/20 px-2 py-0.5 rounded-lg border border-emerald-500/40"
                   >
                     <Ionicons name="camera-outline" size={12} color="#10B981" />
@@ -426,6 +384,7 @@ export default function Index() {
                     placeholder="e.g. RIP-8K2"
                     placeholderTextColor="#71717A"
                     autoCapitalize="characters"
+                    accessibilityLabel="Trainer invite PIN input"
                     className="flex-1 text-white text-sm ml-2.5 font-bold font-mono tracking-widest uppercase"
                   />
                   <TouchableOpacity
@@ -433,6 +392,8 @@ export default function Index() {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       setShowScanner(true);
                     }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open QR code scanner"
                     className="p-1 bg-emerald-500/10 rounded-lg ml-2"
                   >
                     <Ionicons name="qr-code-outline" size={18} color="#10B981" />
@@ -537,7 +498,11 @@ export default function Index() {
                   placeholderTextColor="#71717A"
                   className="flex-1 text-white text-sm ml-2.5 font-semibold"
                 />
-                <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+                <TouchableOpacity
+                  onPress={() => setShowPassword(!showPassword)}
+                  accessibilityRole="button"
+                  accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+                >
                   <Ionicons
                     name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                     size={18}
@@ -558,6 +523,8 @@ export default function Index() {
                     setResetMessage('');
                     setShowResetModal(true);
                   }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Forgot password"
                   className="py-1"
                 >
                   <Text className="text-xs font-bold text-accent-cyan">Forgot Password?</Text>
@@ -575,11 +542,14 @@ export default function Index() {
               </View>
             )}
 
+{mode==='signup'&&<AccountConsent accepted={acceptedTerms} onChange={setAcceptedTerms} />}
             {/* Submit Button */}
             <TouchableOpacity
               activeOpacity={0.85}
               onPress={handleSubmit}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel={mode === 'signup' ? 'Create Account & Start' : 'Log In to RIPPED'}
               className="bg-accent-cyan py-3.5 rounded-xl items-center justify-center shadow-lg shadow-cyan-500/25 mb-3"
             >
               {loading ? (
@@ -598,7 +568,9 @@ export default function Index() {
                   setMode('signup');
                   setSignupPlan('client');
                 }}
-                className="items-center py-1.5 mb-1"
+                accessibilityRole="button"
+                accessibilityLabel="Have a trainer code? Claim free account"
+                className="items-center py-2 px-3 mb-1 bg-emerald-500/10 border border-emerald-500/30 rounded-xl"
               >
                 <Text className="text-xs font-bold text-emerald-400">
                   🎟️ Have a Trainer Code? Claim Free Account →
@@ -609,22 +581,40 @@ export default function Index() {
             {/* Divider */}
             <View className="flex-row items-center my-3">
               <View className="flex-1 h-[1px] bg-zinc-800" />
-              <Text className="text-[11px] text-zinc-500 font-bold px-3">OR</Text>
+              <Text className="text-[11px] text-zinc-500 font-bold px-3">OR EXPLORE DEMO</Text>
               <View className="flex-1 h-[1px] bg-zinc-800" />
             </View>
 
-            {/* Continue as Guest Button */}
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleGuest}
-              disabled={loading}
-              className="bg-zinc-900 border border-zinc-800 py-3 rounded-xl items-center flex-row justify-center space-x-2"
-            >
-              <Ionicons name="flash-outline" size={16} color="#A1A1AA" />
-              <Text className="text-xs font-bold text-zinc-300">
-                Continue as Guest (Offline Mode)
-              </Text>
-            </TouchableOpacity>
+            {/* Clear Guest / Demo Options - Avoids Accidental Role Assignment */}
+            <View className="space-y-2">
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => handleGuest('athlete')}
+                disabled={loading}
+                accessibilityRole="button"
+                accessibilityLabel="Try as Guest Athlete Demo"
+                className="bg-zinc-900 border border-zinc-800 py-3 rounded-xl items-center flex-row justify-center space-x-2"
+              >
+                <Ionicons name="barbell-outline" size={16} color="#06B6D4" />
+                <Text className="text-xs font-bold text-zinc-200">
+                  Try as Guest (Athlete Demo)
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => handleGuest('coach')}
+                disabled={loading}
+                accessibilityRole="button"
+                accessibilityLabel="Try as Coach Trainer Pro Demo"
+                className="bg-zinc-900/60 border border-amber-500/30 py-2.5 rounded-xl items-center flex-row justify-center space-x-2"
+              >
+                <Ionicons name="shield-checkmark-outline" size={15} color="#F59E0B" />
+                <Text className="text-xs font-bold text-amber-400">
+                  Try as Coach (Trainer Pro Demo)
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Footer Note */}
@@ -705,6 +695,8 @@ export default function Index() {
               <View className="flex-row space-x-3 mt-2">
                 <TouchableOpacity
                   onPress={() => setShowResetModal(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel password reset"
                   className="flex-1 bg-zinc-800 py-3.5 rounded-xl items-center border border-zinc-700"
                 >
                   <Text className="text-zinc-300 font-bold text-sm">Cancel</Text>
@@ -712,6 +704,8 @@ export default function Index() {
                 <TouchableOpacity
                   onPress={handlePasswordReset}
                   disabled={resetLoading}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send password reset link"
                   className="flex-1 bg-accent-cyan py-3.5 rounded-xl items-center justify-center shadow-lg shadow-cyan-500/25"
                 >
                   {resetLoading ? (

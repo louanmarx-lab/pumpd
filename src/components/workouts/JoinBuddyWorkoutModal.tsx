@@ -112,7 +112,7 @@ export const JoinBuddyWorkoutModal: React.FC<JoinBuddyWorkoutModalProps> = ({
                 <Ionicons name="people" size={22} color="#06B6D4" />
               </View>
               <View>
-                <Text className="text-lg font-black text-white">Join RIPPED BUDDY</Text>
+                <Text className="text-lg font-black text-white">Join workout</Text>
                 <Text className="text-xs text-zinc-400">Train in real-time with your workout partner</Text>
               </View>
             </View>
@@ -141,7 +141,7 @@ export const JoinBuddyWorkoutModal: React.FC<JoinBuddyWorkoutModalProps> = ({
                       setErrorMessage(null);
                       if (foundRoom) setFoundRoom(null);
                     }}
-                    placeholder="e.g. 42 or RIP-42"
+                    placeholder="e.g. 42 or Paste invitation code"
                     placeholderTextColor="#52525B"
                     autoCapitalize="characters"
                     returnKeyType="search"
@@ -215,7 +215,7 @@ export const JoinBuddyWorkoutModal: React.FC<JoinBuddyWorkoutModalProps> = ({
                 <View className="flex-row items-center justify-between mb-2">
                   <View className="flex-row items-center space-x-1.5 bg-emerald-500/15 border border-emerald-500/40 px-2.5 py-0.5 rounded-full">
                     <View className="w-2 h-2 rounded-full bg-emerald-400" />
-                    <Text className="text-[10px] font-black text-emerald-400 uppercase tracking-wider">
+                    <Text className="text-xs font-black text-emerald-400 uppercase tracking-wider">
                       Live Workout Session
                     </Text>
                   </View>
@@ -269,7 +269,7 @@ export const JoinBuddyWorkoutModal: React.FC<JoinBuddyWorkoutModalProps> = ({
         onClose={() => setShowScanner(false)}
         onScanned={handleScannedCode}
         title="Scan Buddy QR Code"
-        subtitle="Align your buddy's GymBuddy QR code in frame"
+        subtitle="Align your friend’s workout QR code in frame"
       />
     </Modal>
   );

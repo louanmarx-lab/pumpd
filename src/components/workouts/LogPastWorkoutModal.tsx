@@ -16,6 +16,8 @@ import * as Haptics from 'expo-haptics';
 import { useUserWorkspace } from '../../context/UserWorkspaceContext';
 import { LoggedExercise, SetLog, SetType, Exercise, WorkoutLog } from '../../types';
 
+import { getLocalDate, parseLocalDate } from '../../utils/localDate';
+
 interface LogPastWorkoutModalProps {
   visible: boolean;
   onClose: () => void;
@@ -25,10 +27,7 @@ interface LogPastWorkoutModalProps {
   onSaveOverride?: (log: Omit<WorkoutLog, 'id'>) => WorkoutLog;
 }
 
-const getPastDateStr = (daysAgo: number): string => {
-  const d = new Date(Date.now() - daysAgo * 86400000);
-  return d.toISOString().split('T')[0];
-};
+const getPastDateStr = (daysAgo: number): string => getLocalDate(-daysAgo);
 
 export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
   visible,
@@ -188,7 +187,7 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
     });
   };
 
-  const handleSavePastWorkout = () => {
+  const handleSavePastWorkout = async () => {
     if (!routineTitle.trim()) {
       Alert.alert('Missing Title', 'Please enter a routine title.');
       return;
@@ -226,15 +225,17 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
       splitId: activeSplit?.id || 'split_custom',
       routineName: routineTitle.trim(),
       date: effectiveDate,
-      timestamp: new Date(effectiveDate).getTime() || Date.now(),
+      timestamp: parseLocalDate(effectiveDate)?.getTime() ?? Date.now(),
       durationSeconds: durationMinsNum * 60,
       exercises: compiledExercises,
     };
 
-    if (onSaveOverride) {
-      onSaveOverride(logPayload);
-    } else {
-      saveWorkoutLog(logPayload);
+    try {
+      if (onSaveOverride) await onSaveOverride(logPayload);
+      else await saveWorkoutLog(logPayload);
+    } catch {
+      Alert.alert('Could not save workout', 'Try again to save it on this device.');
+      return;
     }
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -242,7 +243,7 @@ export const LogPastWorkoutModal: React.FC<LogPastWorkoutModalProps> = ({
       'Workout Saved! 🏋️',
       clientName
         ? `Saved "${routineTitle}" for ${clientName} on ${effectiveDate} (${compiledExercises.length} exercises).`
-        : `Saved "${routineTitle}" for ${effectiveDate} (${compiledExercises.length} exercises). Automatically synced to local storage & cloud backup.`
+        : `Saved "${routineTitle}" for ${effectiveDate} (${compiledExercises.length} exercises). Saved on this device.`
     );
     onClose();
   };

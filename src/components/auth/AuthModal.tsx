@@ -1,3 +1,4 @@
+import { AccountConsent } from './AccountConsent';
 import React, { useState } from 'react';
 import {
   View,
@@ -21,8 +22,6 @@ import { WeightUnit } from '../../types';
 import {
   signInWithEmail,
   registerWithEmail,
-  signOutUser,
-  signInAsGuest,
   sendPasswordReset,
 } from '../../services/authService';
 
@@ -37,11 +36,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
     firebaseUser,
     activeUser,
     cloudSyncStatus,
-    updateWeightUnit,
     syncAllToCloud,
     signOut,
   } = useUserWorkspace();
 
+  const [acceptedTerms,setAcceptedTerms] = useState(false);
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [preferredUnit, setPreferredUnit] = useState<WeightUnit>(activeUser.weightUnit || 'kg');
   const [email, setEmail] = useState('');
@@ -72,6 +71,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
   };
 
   const handleSubmit = async () => {
+    if(mode==='signup'&&!acceptedTerms){setErrorMessage('Please confirm the terms and privacy information before creating an account.');return;}
     if (!email.trim() || !password.trim()) {
       setErrorMessage('Please enter both email and password.');
       return;
@@ -90,13 +90,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
         await registerWithEmail(
           email,
           password,
-          displayName.trim() || activeUser.displayName
+          displayName.trim() || activeUser.displayName,
+          'athlete', 'athlete', preferredUnit,
         );
-        updateWeightUnit(preferredUnit);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert(
           'Account Created! 🚀',
-          'Your account is set up and your workouts are synced to the cloud.'
+          'Your account is ready. Check your email for the verification link.'
         );
       } else {
         await signInWithEmail(email, password);
@@ -106,8 +106,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
           'Signed in successfully. Syncing your data from the cloud.'
         );
       }
-      await syncAllToCloud();
+      setPassword('');
       onClose();
+      router.replace('/');
     } catch (err: any) {
       console.warn('Auth action failed:', err);
       const code = err?.code || '';
@@ -209,7 +210,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
                   >
                     {cloudSyncStatus === 'synced'
                       ? '● Cloud Active'
-                      : '● Offline Local Cache'}
+                      : cloudSyncStatus === 'syncing' ? '● Sync Pending'
+                  : cloudSyncStatus === 'error' ? '● Sync Failed' : '● Saved on This Device'}
                   </Text>
                 </View>
               </View>
@@ -221,7 +223,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
               </Text>
               <Text className="text-[11px] text-zinc-400 mt-1">
                 {isGuest
-                  ? 'Your workouts and nutrition are cached on this phone. Sign in with an email to back up and sync across devices.'
+                  ? 'Your guest workouts and nutrition are stored on this device.'
                   : 'Your data automatically synchronizes with Cloud Firestore whenever connected.'}
               </Text>
             </View>
@@ -231,10 +233,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
               <View className="space-y-3 mb-6">
                 <TouchableOpacity
                   activeOpacity={0.8}
+                  disabled={cloudSyncStatus === 'syncing'}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    syncAllToCloud();
-                    Alert.alert('Sync Complete', 'All local logs pushed to Cloud Firestore.');
+                    void syncAllToCloud();
                   }}
                   className="bg-accent-cyan p-3.5 rounded-xl flex-row items-center justify-center space-x-2"
                 >
@@ -411,6 +413,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ visible, onClose }) => {
                   </View>
                 )}
 
+{mode==='signup'&&<AccountConsent accepted={acceptedTerms} onChange={setAcceptedTerms} />}
                 {/* Submit Button */}
                 <TouchableOpacity
                   activeOpacity={0.85}

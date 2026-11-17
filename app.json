@@ -2,7 +2,7 @@
   "expo": {
     "name": "RIPPED",
     "slug": "ripped",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -14,7 +14,9 @@
     },
     "ios": {
       "supportsTablet": true,
-      "userInterfaceStyle": "dark"
+      "userInterfaceStyle": "dark",
+      "bundleIdentifier": "com.multiplier.ripped",
+      "buildNumber": "1"
     },
     "android": {
       "package": "com.multiplier.ripped",
@@ -25,9 +27,12 @@
       },
       "userInterfaceStyle": "dark",
       "permissions": [
-        "CAMERA",
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.CAMERA"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -38,15 +43,22 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow RIPPED to access your camera to scan workout QR codes."
+          "cameraPermission": "Allow RIPPED to access your camera to scan workout QR codes.",
+          "recordAudioAndroid": false,
+          "microphonePermission": false
         }
-      ]
+      ],
+      "expo-font",
+      "expo-status-bar"
     ],
     "updates": {
-      "url": "https://u.expo.dev/5d872213-25f7-4a4c-b1b6-753d3c67634d"
+      "url": "https://u.expo.dev/5d872213-25f7-4a4c-b1b6-753d3c67634d",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
     },
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprint"
     },
     "extra": {
       "router": {},

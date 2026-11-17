@@ -12,3 +12,14 @@ yarn-error.*
 scratch/
 assets/preview_tests/
 
+
+functions/node_modules/
+functions/.env*
+!functions/.env.example
+.env*
+!.env.example
+website/.sites/
+website/node_modules/
+*-debug.log
+# The support website is its own Sites source repository, separate from the app.
+website/

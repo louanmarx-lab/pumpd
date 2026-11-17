@@ -1,14 +1,14 @@
 import React from 'react';
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { HeaderBackToRosterButton } from '../../src/components/coach/HeaderBackToRosterButton';
-import { Platform } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUserWorkspace } from '../../src/context/UserWorkspaceContext';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const { userRole, managedClient, isViewingPersonalProfile, accountType } = useUserWorkspace();
+  const { firebaseUser, isAuthReady, userRole, managedClient, isViewingPersonalProfile, accountType } = useUserWorkspace();
   // Safe bottom padding for Samsung 3-button navigation, gesture pill, and iOS home bar
   const safeBottom = Math.max(insets.bottom, Platform.OS === 'android' ? 14 : 8);
 
@@ -21,6 +21,11 @@ export default function TabsLayout() {
   const isAthleteDeck = userRole === 'athlete' || isManagingClient || isViewingPersonalProfile;
   const showAthleteTabs = isAthleteDeck;
   const showCoachTabs = isCoachAccount && !isAthleteDeck;
+
+  if (!isAuthReady) {
+    return <View className="flex-1 items-center justify-center bg-dark-bg"><ActivityIndicator color="#06B6D4" /></View>;
+  }
+  if (!firebaseUser) return <Redirect href="/" />;
 
   return (
     <Tabs
@@ -66,7 +71,7 @@ export default function TabsLayout() {
             ? 'My Workouts'
             : 'Ripped',
           href: showAthleteTabs ? '/workouts' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="barbell-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="barbell-outline" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
       <Tabs.Screen
@@ -77,22 +82,22 @@ export default function TabsLayout() {
             ? `${managedClient.name.split(' ')[0]}'s Nutrition`
             : isViewingPersonalProfile
             ? 'My Nutrition'
-            : 'Macro Tracker',
+            : 'Nutrition',
           href: showAthleteTabs ? '/nutrition' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="nutrition-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="nutrition-outline" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
       <Tabs.Screen
         name="analytics"
         options={{
-          title: 'Analytics',
+          title: 'Progress',
           headerTitle: isManagingClient && managedClient
             ? `${managedClient.name.split(' ')[0]}'s Progress`
             : isViewingPersonalProfile
             ? 'My Progress'
             : 'Progress',
           href: showAthleteTabs ? '/analytics' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="stats-chart-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="stats-chart-outline" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
 
@@ -103,7 +108,7 @@ export default function TabsLayout() {
           title: 'Clients',
           headerTitle: 'Clients',
           href: showCoachTabs ? '/clients' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
       <Tabs.Screen
@@ -112,7 +117,7 @@ export default function TabsLayout() {
           title: 'Programs',
           headerTitle: 'Programs',
           href: showCoachTabs ? '/programs' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="barbell" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="barbell" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
       <Tabs.Screen
@@ -121,7 +126,7 @@ export default function TabsLayout() {
           title: 'Meals',
           headerTitle: 'Meal Plans',
           href: showCoachTabs ? '/meal-plans' : null,
-          tabBarIcon: ({ color, size }) => <Ionicons name="restaurant-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="restaurant-outline" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
       <Tabs.Screen
@@ -137,7 +142,7 @@ export default function TabsLayout() {
         options={{
           title: 'Settings',
           headerTitle: 'Settings',
-          tabBarIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Ionicons name="settings-outline" size={size} color={typeof color === 'number' ? undefined : color ?? undefined} />,
         }}
       />
     </Tabs>

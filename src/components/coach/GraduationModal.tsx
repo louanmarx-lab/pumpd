@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   Modal,
@@ -20,6 +21,7 @@ export const GraduationModal: React.FC<GraduationModalProps> = ({
   visible,
   onClose,
 }) => {
+  const router=useRouter();
   const {
     activeUser,
     workoutLogs,
@@ -51,6 +53,7 @@ export const GraduationModal: React.FC<GraduationModalProps> = ({
 
   const handleSelectPlan = (plan: 'trial' | 'free') => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if(plan==='trial'){onClose();router.push('/(tabs)/settings');return;}
     completeGraduation(plan);
     onClose();
   };
@@ -167,21 +170,21 @@ export const GraduationModal: React.FC<GraduationModalProps> = ({
                 <View className="flex-row items-center space-x-2">
                   <Ionicons name="flash" size={18} color="#06B6D4" />
                   <Text className="text-base font-black text-white">
-                    RIPPED Solo Pro (Free Trial)
+                    RIPPED Solo Pro
                   </Text>
                 </View>
                 <View className="bg-cyan-500 px-2 py-0.5 rounded-full">
                   <Text className="text-[9px] font-black text-black uppercase">
-                    7 Days Free
+                    Store plan
                   </Text>
                 </View>
               </View>
               <Text className="text-xs text-zinc-300 leading-relaxed mb-3">
-                Continue with full evidence-based features: unlimited custom splits, live RIPPED BUDDY co-op, 1RM analytics, and rolling rotations.
+                Continue with full evidence-based features: unlimited custom splits, shared workouts, 1RM analytics, and rolling rotations.
               </Text>
               <View className="bg-accent-cyan py-3 rounded-xl items-center shadow-md">
                 <Text className="text-black font-extrabold text-xs tracking-wide">
-                  Start 7-Day Free Trial (R59/mo)
+                  Explore store subscriptions
                 </Text>
               </View>
             </TouchableOpacity>

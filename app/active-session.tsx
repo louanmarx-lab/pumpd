@@ -9,8 +9,9 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -20,10 +21,19 @@ import { useUserWorkspace } from '../src/context/UserWorkspaceContext';
 import { SetType, SetLog, LoggedExercise, Exercise, MuscleGroup } from '../src/types';
 import { calculate1RM, getExerciseHistory } from '../src/utils/fitness';
 import { useGymJam } from '../src/hooks/useGymJam';
+import { TrainTogetherModal } from '../src/components/workouts/TrainTogetherModal';
 import { GymJamLobbyModal } from '../src/components/GymJamLobbyModal';
 import { WorkoutReceiptModal } from '../src/components/WorkoutReceiptModal';
 import { WorkoutReceiptData, SessionExerciseTemplate } from '../src/types/gymjam';
 import { useWorkoutTimer, formatDuration } from '../src/hooks/useWorkoutTimer';
+
+import { formatLocalDate } from '../src/utils/localDate';
+import {
+  clearWorkoutDraft, completedWorkoutExercises, DraftSet, loadWorkoutDraft, parseSetReps, parseSetWeight,
+  saveWorkoutDraft, WorkoutDraft, workoutDraftKey,
+} from '../src/utils/workoutDraft';
+
+const KG_PER_LB = 0.45359237;
 
 const SET_TYPES: SetType[] = ['Normal', 'Warmup', 'Drop', 'Failure'];
 const MUSCLE_GROUPS: MuscleGroup[] = [
@@ -39,12 +49,39 @@ const MUSCLE_GROUPS: MuscleGroup[] = [
 ];
 
 export default function ActiveSessionScreen() {
-  // Keep screen awake during workout session
+  const { currentUser, activeUser, isAuthReady, isHydrated, managedClient } = useUserWorkspace();
+  const { clientId } = useLocalSearchParams<{ clientId?: string }>();
+  const key = workoutDraftKey(currentUser.id, clientId || managedClient?.id || activeUser.id);
+  const scope = useRef<string | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; draft: WorkoutDraft | null } | null>(null);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    let cancelled = false;
+    scope.current ??= key;
+    if (scope.current !== key) return;
+    void loadWorkoutDraft(key).then((draft) => {
+      if (!cancelled) setLoaded({ key, draft });
+    }).catch(() => {
+      if (!cancelled) setLoaded({ key, draft: null });
+    });
+    return () => { cancelled = true; };
+  }, [isHydrated, key]);
+
+  if (isAuthReady && (!isHydrated || (scope.current && scope.current !== key))) return <Redirect href="/" />;
+  if (!isHydrated || loaded?.key !== key) {
+    return <View className="flex-1 items-center justify-center bg-dark-bg"><ActivityIndicator color="#06B6D4" /></View>;
+  }
+  return <ActiveSession draft={loaded.draft} draftKey={key} />;
+}
+
+function ActiveSession({ draft, draftKey }: { draft: WorkoutDraft | null; draftKey: string }) {
   useKeepAwake();
 
   const router = useRouter();
   const params = useLocalSearchParams<{
     splitId?: string;
+    routineId?: string;
     routineName?: string;
     routineTitle?: string;
     exerciseIds?: string;
@@ -52,11 +89,15 @@ export default function ActiveSessionScreen() {
     clientName?: string;
     startedAt?: string;
     joinRoomPin?: string;
+    togetherMode?: 'phone' | 'separate';
   }>();
 
   const {
     currentUser,
-    activeUser,
+    activeUser: workspaceLifter,
+    partnerUser,
+    managedClient,
+    linkPartnerUser,
     activeWorkspace,
     userRole,
     coachProfile,
@@ -68,6 +109,9 @@ export default function ActiveSessionScreen() {
     logClientWorkout,
     addExercise,
   } = useUserWorkspace();
+  const [activeUser] = useState(workspaceLifter);
+  const sessionSplitId = draft?.splitId ?? params.splitId;
+  const sessionRoutineId = draft?.routineId ?? params.routineId;
 
   const activeClient = params.clientId ? clients.find((c) => c.id === params.clientId) : null;
   const routineTitle =
@@ -78,12 +122,26 @@ export default function ActiveSessionScreen() {
       : activeClient
       ? `${activeClient.name}'s Training`
       : 'Gym Workout Session');
-  const initialIds: string[] = params.exerciseIds ? JSON.parse(params.exerciseIds) : ['ex_1', 'ex_2'];
+  const [initialIds] = useState<string[]>(() => {
+    if (draft) return draft.exerciseIds;
+    try {
+      const parsed = JSON.parse(params.exerciseIds || '[]');
+      return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
+    } catch { return []; }
+  });
 
   const insets = useSafeAreaInsets();
 
   const [sessionExerciseIds, setSessionExerciseIds] = useState<string[]>(initialIds);
-  const [currentRoutineTitle, setCurrentRoutineTitle] = useState<string>(routineTitle);
+  const [currentRoutineTitle, setCurrentRoutineTitle] = useState<string>(draft?.title || routineTitle);
+  const canAddLocalBuddy = !params.clientId && !managedClient && activeUser.id === currentUser.id;
+  const [buddyId, setBuddyId] = useState(draft?.buddy?.id);
+  const localBuddy = canAddLocalBuddy && buddyId === partnerUser?.id ? partnerUser : null;
+  const [showLocalBuddy, setShowLocalBuddy] = useState(false);
+  const [buddyName, setBuddyName] = useState('');
+  const [buddyError, setBuddyError] = useState('');
+  const [isAddingBuddy, setIsAddingBuddy] = useState(false);
+  const addingBuddy = useRef(false);
   const [viewingLifterId, setViewingLifterId] = useState<string>(activeUser.id);
   const [partnerBenchmarks, setPartnerBenchmarks] = useState<
     Record<
@@ -182,8 +240,12 @@ export default function ActiveSessionScreen() {
   };
 
   // Independent workout session state per user: { [userId]: LoggedExercise[] }
-  const [userExercisesMap, setUserExercisesMap] = useState<Record<string, LoggedExercise[]>>({});
+  const [userExercisesMap, setUserExercisesMap] = useState<Record<string, LoggedExercise[]>>(() => ({
+    [activeUser.id]: draft?.exercises ?? buildInitialExercisesForUser(activeUser.id, initialIds),
+    ...(draft?.buddy && localBuddy ? { [localBuddy.id]: draft.buddy.exercises } : {}),
+  }));
   const [showSwapModal, setShowSwapModal] = useState(false);
+  const [expandedBests, setExpandedBests] = useState<Record<string, boolean>>({});
   const [swapTargetIndex, setSwapTargetIndex] = useState<number | null>(null);
 
   // Add Exercise & Create Custom Exercise state
@@ -194,48 +256,87 @@ export default function ActiveSessionScreen() {
   const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>('Chest');
   const [newExEquipment, setNewExEquipment] = useState('Barbell');
 
-  // Session timestamp identifier to ensure fresh start and prevent cross-session timer leaks
-  const sessionStartedAt = useMemo(() => {
-    if (params.startedAt && !isNaN(Number(params.startedAt))) {
-      return Number(params.startedAt);
-    }
-    return Date.now();
-  }, [params.startedAt]);
-
-  // Background-resilient workout timer (timestamp-delta architecture)
+  const [sessionStartedAt] = useState(() => draft?.startedAt || Number(params.startedAt) || Date.now());
+  const [isFinishing, setIsFinishing] = useState(false);
+  const [showExit, setShowExit] = useState(false);
+  const [setNotice, setSetNotice] = useState<string | null>(null);
+  const closed = useRef(false);
+  const finishInProgress = useRef(false);
+  const draftWrites = useRef(Promise.resolve());
+  const draftRevision = useRef(0);
+  const [draftSaveState, setDraftSaveState] = useState<'saving' | 'saved' | 'error'>('saving');
   const workoutTimer = useWorkoutTimer({
     autoStart: true,
+    initialAccumulatedTime: draft?.elapsedSeconds || 0,
     sessionId: sessionStartedAt,
-    storageKey: `@ripped_active_workout_timer_${params.splitId || 'session'}`,
-    maxStaleHours: 3,
+    storageKey: `${draftKey}_timer_${sessionStartedAt}`,
   });
   const secondsElapsed = workoutTimer.elapsedSeconds;
   const isTimerRunning = workoutTimer.isRunning;
-  const { togglePauseResume: toggleWorkoutTimer, stop: stopWorkoutTimer, reset: resetWorkoutTimer } = workoutTimer;
+  const { togglePauseResume: toggleWorkoutTimer, stop: stopWorkoutTimer, pause: pauseWorkoutTimer } = workoutTimer;
 
-  const handleExitWorkout = () => {
-    Alert.alert(
-      'Leave Workout?',
-      'Are you sure you want to exit? Your session timer and unsaved sets will be discarded.',
-      [
-        { text: 'Keep Training', style: 'cancel' },
-        {
-          text: 'Leave & Reset',
-          style: 'destructive',
-          onPress: () => {
-            stopWorkoutTimer();
-            router.back();
-          },
-        },
-      ]
-    );
+  const persistDraft = (elapsedSeconds: number) => {
+    if (closed.current) return draftWrites.current;
+    const snapshot: WorkoutDraft = {
+      startedAt: sessionStartedAt,
+      title: currentRoutineTitle,
+      splitId: sessionSplitId,
+      routineId: sessionRoutineId,
+      exerciseIds: sessionExerciseIds,
+      lifterId: activeUser.id,
+      exercises: userExercisesMap[activeUser.id] || [],
+      elapsedSeconds,
+      buddy: localBuddy ? { id: localBuddy.id, exercises: userExercisesMap[localBuddy.id] || [] } : undefined,
+    };
+    const revision = ++draftRevision.current;
+    setDraftSaveState('saving');
+    draftWrites.current = draftWrites.current.catch(() => {}).then(() => saveWorkoutDraft(draftKey, snapshot));
+    void draftWrites.current.then(() => {
+      if (revision === draftRevision.current) setDraftSaveState('saved');
+    }, () => {
+      if (revision === draftRevision.current) setDraftSaveState('error');
+    });
+    return draftWrites.current;
   };
 
-  // Weight display unit preference (kg / lbs)
+  useEffect(() => {
+    void persistDraft(secondsElapsed).catch(() => {});
+  }, [sessionExerciseIds, currentRoutineTitle, userExercisesMap, isTimerRunning, localBuddy?.id]);
+
+  const leave = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/workouts');
+  };
+
+  const exitWithDraft = async (discard: boolean) => {
+    try {
+      if (discard) {
+        closed.current = true;
+        await draftWrites.current.catch(() => {});
+        await clearWorkoutDraft(draftKey);
+        stopWorkoutTimer();
+      } else {
+        pauseWorkoutTimer();
+        await persistDraft(secondsElapsed);
+      }
+      leave();
+    } catch {
+      closed.current = false;
+      setSetNotice('Could not save the workout. Please try again before leaving.');
+    }
+  };
+
+  const handleExitWorkout = () => {
+    if (!finishInProgress.current) setShowExit(true);
+  };
+
   const weightUnit = activeUser.weightUnit || 'kg';
+  const fromKg = (kg: number) => weightUnit === 'lbs' ? Number((kg / KG_PER_LB).toFixed(2)) : kg;
 
   // Gym Jam P2P State & Handlers
   const [showGymJamLobby, setShowGymJamLobby] = useState(false);
+  const [showTogether, setShowTogether] = useState(false);
+  const openedTogether = useRef(false);
   const [activeExerciseIndex, setActiveExerciseIndex] = useState<number>(0);
   const [partnerLatestSet, setPartnerLatestSet] = useState<{
     exerciseName?: string;
@@ -247,7 +348,7 @@ export default function ActiveSessionScreen() {
 
   // Workout Receipt Modal State
   const [showReceiptModal, setShowReceiptModal] = useState(false);
-  const [receiptData, setReceiptData] = useState<WorkoutReceiptData | null>(null);
+  const [receipts, setReceipts] = useState<WorkoutReceiptData[]>([]);
   const handleFinishWorkoutRef = useRef<((isRemote?: boolean, remoteName?: string) => void) | null>(null);
 
   const gymJam = useGymJam({
@@ -593,17 +694,18 @@ export default function ActiveSessionScreen() {
   // Auto-connect seamlessly if launched with joinRoomPin (from the direct Join Buddy modal)
   const hasAutoJoinedRef = useRef(false);
   useEffect(() => {
-    if (params.joinRoomPin && !hasAutoJoinedRef.current) {
+    if (!localBuddy && !draft && params.joinRoomPin && !hasAutoJoinedRef.current) {
       hasAutoJoinedRef.current = true;
       gymJam.joinRoom(params.joinRoomPin);
     }
-  }, [params.joinRoomPin, gymJam.joinRoom]);
+  }, [params.joinRoomPin, gymJam.joinRoom, localBuddy]);
 
   // Lifters currently participating in this workout session
   const sessionLifters = useMemo(() => {
     const list: { id: string; name: string }[] = [
       { id: activeUser.id, name: activeUser.displayName },
     ];
+    if (localBuddy) list.push({ id: localBuddy.id, name: localBuddy.displayName });
     if (
       gymJam.connectionStatus === 'connected' &&
       gymJam.partnerUserId &&
@@ -624,6 +726,7 @@ export default function ActiveSessionScreen() {
   }, [
     activeUser.id,
     activeUser.displayName,
+    localBuddy,
     gymJam.connectionStatus,
     gymJam.partnerUserId,
     gymJam.partnerName,
@@ -645,14 +748,6 @@ export default function ActiveSessionScreen() {
       gymJam.broadcastSyncBenchmarks(myBenchmarks);
     }
   }, [gymJam.connectionStatus, sessionExerciseIds, workoutLogs, activeUser.id]);
-
-  // Initialize independent session exercise cards for active user
-  useEffect(() => {
-    setUserExercisesMap((prev) => ({
-      ...prev,
-      [activeUser.id]: buildInitialExercisesForUser(activeUser.id, sessionExerciseIds),
-    }));
-  }, [activeUser.id, sessionExerciseIds]);
 
   // When partner joins, initialize partner's exercise sets to match active user's structure 100%
   useEffect(() => {
@@ -688,6 +783,43 @@ export default function ActiveSessionScreen() {
     }
   }, [gymJam.connectionStatus, gymJam.partnerUserId, sessionExerciseIds, activeUser.id]);
 
+  const showAddBuddy = canAddLocalBuddy && !localBuddy && !params.joinRoomPin
+    && !gymJam.roomPin && gymJam.connectionStatus !== 'connected' && gymJam.connectionStatus !== 'connecting';
+
+  useEffect(() => {
+    if (openedTogether.current || !params.togetherMode) return;
+    openedTogether.current = true;
+    if (localBuddy || params.joinRoomPin) return;
+    if (params.togetherMode === 'phone' && showAddBuddy) setShowLocalBuddy(true);
+    else if (params.togetherMode === 'separate') setShowGymJamLobby(true);
+  }, [params.togetherMode, showAddBuddy, localBuddy, params.joinRoomPin]);
+
+  const handleAddLocalBuddy = async () => {
+    if (!showAddBuddy || addingBuddy.current || (!partnerUser && !buddyName.trim())) return;
+    addingBuddy.current = true;
+    setIsAddingBuddy(true);
+    setBuddyError('');
+    try {
+      const buddy = partnerUser || await linkPartnerUser(buddyName);
+      const template = (userExercisesMap[activeUser.id] || []).map((exercise) => ({
+        ...exercise,
+        sets: exercise.sets.map(({ setNumber, type }) => ({
+          setNumber, type, weightKg: 0, reps: 0, isCompleted: false,
+        })),
+      }));
+      setUserExercisesMap((previous) => ({ ...previous, [buddy.id]: template }));
+      setBuddyId(buddy.id);
+      setViewingLifterId(buddy.id);
+      setSetNotice(null);
+      setShowLocalBuddy(false);
+    } catch {
+      setBuddyError('Could not save your buddy profile. Try again.');
+    } finally {
+      addingBuddy.current = false;
+      setIsAddingBuddy(false);
+    }
+  };
+
   // Get current viewed lifter's exercises & name (Independent Viewing: Herman viewing Lou-an does not switch Lou-an's phone!)
   const currentSessionExercises: LoggedExercise[] =
     userExercisesMap[viewingLifterId] || buildInitialExercisesForUser(viewingLifterId, sessionExerciseIds);
@@ -706,7 +838,8 @@ export default function ActiveSessionScreen() {
     exIndex: number,
     setIndex: number,
     field: keyof SetLog,
-    value: any
+    value: any,
+    input?: string,
   ) => {
     let nextMapForSync: Record<string, LoggedExercise[]> | null = null;
     setUserExercisesMap((prev) => {
@@ -715,7 +848,11 @@ export default function ActiveSessionScreen() {
         : [...buildInitialExercisesForUser(viewingLifterId, sessionExerciseIds)];
       const ex = { ...currentList[exIndex] };
       const sets = [...ex.sets];
-      sets[setIndex] = { ...sets[setIndex], [field]: value };
+      const set: DraftSet = { ...sets[setIndex], [field]: value };
+      if (field === 'weightKg') set.weightInput = input;
+      if (field === 'reps') set.repsInput = input;
+      if ((field === 'weightKg' || field === 'reps') && input !== undefined) set.isCompleted = false;
+      sets[setIndex] = set;
       ex.sets = sets;
       currentList[exIndex] = ex;
       const next = { ...prev, [viewingLifterId]: currentList };
@@ -736,33 +873,18 @@ export default function ActiveSessionScreen() {
     const currentSet = currentEx?.sets[setIndex];
     if (!currentEx || !currentSet) return;
 
-    const currentCompleted = currentSet.isCompleted || false;
-    const newCompleted = !currentCompleted;
-
-    if (newCompleted) {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-      // Auto-commit ghosted weights & reps if inputs were left blank or 0
-      const lifterLogs = workoutLogs.filter((l) => l.userId === viewingLifterId);
-      const hist = getExerciseHistory(lifterLogs, currentEx.exerciseId);
-      const prevSet = hist.previousSessionSets?.[setIndex];
-
-      let committedWeight = currentSet.weightKg;
-      let committedReps = currentSet.reps;
-
-      if (committedWeight <= 0) {
-        committedWeight = prevSet?.weightKg && prevSet.weightKg > 0 ? prevSet.weightKg : 20;
-        handleUpdateSet(exIndex, setIndex, 'weightKg', committedWeight);
+    const set: DraftSet = currentSet;
+    if (!set.isCompleted) {
+      const weight = set.weightInput ?? (set.weightKg > 0 ? String(fromKg(set.weightKg)) : '');
+      const reps = set.repsInput ?? String(set.reps);
+      if (parseSetWeight(weight) === null || parseSetReps(reps) === null) {
+        setSetNotice(`${currentEx.exerciseName}, set ${setIndex + 1}: enter weight and at least one rep. Use 0 for bodyweight.`);
+        return;
       }
-      if (committedReps <= 0) {
-        committedReps = prevSet?.reps && prevSet.reps > 0 ? prevSet.reps : 8;
-        handleUpdateSet(exIndex, setIndex, 'reps', committedReps);
-      }
-    } else {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-
-    handleUpdateSet(exIndex, setIndex, 'isCompleted', newCompleted);
+    setSetNotice(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    handleUpdateSet(exIndex, setIndex, 'isCompleted', !set.isCompleted);
   };
 
   const handleAdvanceExercise = (targetIndex: number) => {
@@ -781,7 +903,7 @@ export default function ActiveSessionScreen() {
     // In Co-Op, add set across all lifters so set counts and numbers remain 100% mirrored
     setUserExercisesMap((prev) => {
       const nextMap = { ...prev };
-      const lifterIds = Array.from(
+      const lifterIds = localBuddy ? [viewingLifterId] : Array.from(
         new Set([
           activeUser.id,
           ...Object.keys(prev),
@@ -794,12 +916,11 @@ export default function ActiveSessionScreen() {
           : [...buildInitialExercisesForUser(uId, sessionExerciseIds)];
         if (list[exIndex]) {
           const targetEx = { ...list[exIndex] };
-          const lastSet = targetEx.sets[targetEx.sets.length - 1];
           const newSet: SetLog = {
             setNumber: targetEx.sets.length + 1,
             type: 'Normal',
-            weightKg: lastSet ? lastSet.weightKg : 50,
-            reps: lastSet ? lastSet.reps : 8,
+            weightKg: 0,
+            reps: 0,
             isCompleted: false,
           };
           targetEx.sets = [...targetEx.sets, newSet].map((s, idx) => ({ ...s, setNumber: idx + 1 }));
@@ -829,7 +950,7 @@ export default function ActiveSessionScreen() {
 
     setUserExercisesMap((prev) => {
       const nextMap = { ...prev };
-      const lifterIds = Array.from(
+      const lifterIds = localBuddy ? [viewingLifterId] : Array.from(
         new Set([
           activeUser.id,
           ...Object.keys(prev),
@@ -918,9 +1039,9 @@ export default function ActiveSessionScreen() {
           exerciseId: ex.id,
           exerciseName: ex.name,
           sets: [
-            { setNumber: 1, type: 'Warmup', weightKg: 20, reps: 10, isCompleted: false },
-            { setNumber: 2, type: 'Normal', weightKg: 40, reps: 8, isCompleted: false },
-            { setNumber: 3, type: 'Normal', weightKg: 50, reps: 8, isCompleted: false },
+            { setNumber: 1, type: 'Warmup', weightKg: 0, reps: 0, isCompleted: false },
+            { setNumber: 2, type: 'Normal', weightKg: 0, reps: 0, isCompleted: false },
+            { setNumber: 3, type: 'Normal', weightKg: 0, reps: 0, isCompleted: false },
           ],
         };
         nextMap[uId] = [...currentList, newLoggedEx];
@@ -954,139 +1075,145 @@ export default function ActiveSessionScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  const handleFinishWorkout = (isRemoteTriggered: boolean = false, remoteFinishedByName?: string) => {
-    const myExList =
-      userExercisesMap[activeUser.id] ||
-      buildInitialExercisesForUser(activeUser.id, sessionExerciseIds);
-    const completedSetsCount = myExList.reduce(
-      (acc, ex) => acc + ex.sets.filter((s) => s.isCompleted).length,
-      0
-    );
-
-    if (completedSetsCount === 0 && !isRemoteTriggered) {
-      Alert.alert(
-        'Empty Session',
-        'Please complete at least one set for your account before finishing the workout.',
-        [{ text: 'OK' }]
-      );
+  const handleFinishWorkout = async (isRemoteTriggered = false, remoteFinishedByName?: string) => {
+    if (finishInProgress.current || closed.current) return;
+    const completedExercises = completedWorkoutExercises(userExercisesMap[activeUser.id] || []);
+    const buddyExercises = localBuddy ? completedWorkoutExercises(userExercisesMap[localBuddy.id] || []) : [];
+    if (!completedExercises.length && !buddyExercises.length) {
+      if (!isRemoteTriggered) setSetNotice('Complete at least one set before finishing.');
       return;
     }
 
-    // If finished locally and Gym Jam is connected, broadcast finish to partner phone!
+    finishInProgress.current = true;
+    setIsFinishing(true);
+    setSetNotice(null);
+    const todayDate = formatLocalDate();
+    pauseWorkoutTimer();
+    const finalDurationSeconds = secondsElapsed;
+    const logId = `log_session_${sessionStartedAt}_${activeUser.id}`;
+    const log = {
+      userId: params.clientId ? (activeClient?.linkedUserId || params.clientId) : activeUser.id,
+      workspaceId: activeWorkspace.id,
+      splitId: sessionSplitId || 'split_custom',
+      routineId: sessionRoutineId,
+      routineName: currentRoutineTitle,
+      date: todayDate,
+      timestamp: Date.now(),
+      durationSeconds: finalDurationSeconds,
+      exercises: completedExercises,
+    };
+    const buddyLog = localBuddy && buddyExercises.length ? {
+      ...log,
+      id: `log_session_${sessionStartedAt}_${localBuddy.id}`,
+      userId: localBuddy.id,
+      exercises: buddyExercises,
+    } : undefined;
+    try {
+      if (params.clientId) await logClientWorkout(params.clientId, log, logId);
+      else if (completedExercises.length) await saveWorkoutLog(log, logId, buddyLog);
+      else if (buddyLog) await saveWorkoutLog(buddyLog, buddyLog.id);
+    } catch {
+      setSetNotice('Could not save this workout. Your draft is still available. Try finishing again.');
+      finishInProgress.current = false;
+      setIsFinishing(false);
+      return;
+    }
+
+    closed.current = true;
+    await draftWrites.current.catch(() => {});
+    await clearWorkoutDraft(draftKey).catch(() => {});
+    stopWorkoutTimer();
     if (!isRemoteTriggered && gymJam.connectionStatus === 'connected') {
       gymJam.broadcastFinishWorkout(activeUser.id, activeUser.displayName);
     }
+    const buildReceipt = (athleteName: string, loggedExercises: LoggedExercise[], isBuddy = false): WorkoutReceiptData => {
+      let totalVolume = 0;
+      let totalSets = 0;
+      let totalReps = 0;
+      let bestLift: WorkoutReceiptData['bestLift'] = null;
+      let highest1RM = 0;
 
-    const todayDate = new Date().toISOString().split('T')[0];
-    const finalDurationSeconds = stopWorkoutTimer();
+      const exercisesSummary: WorkoutReceiptData['exercisesSummary'] = [];
 
-    // Save workout log: if coaching a client, associate log with the client profile
-    if (completedSetsCount > 0) {
-      if (params.clientId) {
-        logClientWorkout(params.clientId, {
-          userId: activeClient?.linkedUserId || params.clientId,
-          workspaceId: activeWorkspace.id,
-          splitId: params.splitId || 'split_custom',
-          routineName: currentRoutineTitle,
-          date: todayDate,
-          timestamp: Date.now(),
-          durationSeconds: finalDurationSeconds,
-          exercises: myExList,
-        });
-      } else {
-        saveWorkoutLog({
-          userId: activeUser.id,
-          workspaceId: activeWorkspace.id,
-          splitId: params.splitId || 'split_custom',
-          routineName: currentRoutineTitle,
-          date: todayDate,
-          timestamp: Date.now(),
-          durationSeconds: finalDurationSeconds,
-          exercises: myExList,
-        });
-      }
-    }
+      loggedExercises.forEach((ex) => {
+        const completedSets = ex.sets.filter((s) => s.isCompleted);
+        if (completedSets.length > 0) {
+          let topWeight = 0;
+          let topReps = 0;
+          completedSets.forEach((s) => {
+            totalVolume += (s.weightKg || 0) * (s.reps || 0);
+            totalSets += 1;
+            totalReps += s.reps || 0;
 
-    // Build Workout Receipt Data for the active lifter
-    let totalVolume = 0;
-    let totalSets = 0;
-    let totalReps = 0;
-    let bestLift: WorkoutReceiptData['bestLift'] = null;
-    let highest1RM = 0;
-
-    const exercisesSummary: WorkoutReceiptData['exercisesSummary'] = [];
-
-    myExList.forEach((ex) => {
-      const completedSets = ex.sets.filter((s) => s.isCompleted);
-      if (completedSets.length > 0) {
-        let topWeight = 0;
-        let topReps = 0;
-        completedSets.forEach((s) => {
-          totalVolume += (s.weightKg || 0) * (s.reps || 0);
-          totalSets += 1;
-          totalReps += s.reps || 0;
-
-          const est1RM = calculate1RM(s.weightKg, s.reps);
-          if (est1RM > highest1RM) {
-            highest1RM = est1RM;
-            bestLift = {
-              exerciseName: ex.exerciseName,
-              weightKg: s.weightKg,
-              reps: s.reps,
-            };
-          }
-
-          if (s.weightKg > topWeight) {
-            topWeight = s.weightKg;
-            topReps = s.reps;
-          }
-        });
-
-        exercisesSummary.push({
-          exerciseName: ex.exerciseName,
-          completedSetsCount: completedSets.length,
-          topSetWeight: topWeight,
-          topSetReps: topReps,
-        });
-      }
-    });
-
-    setReceiptData({
-      id: `RIP-${Math.floor(100000 + Math.random() * 900000)}`,
-      date: todayDate,
-      athleteName: params.clientName || activeClient?.name || activeUser.displayName,
-      routineName: currentRoutineTitle,
-      durationSeconds: finalDurationSeconds,
-      totalVolumeKg: Math.round(totalVolume),
-      totalSets,
-      totalReps,
-      bestLift,
-      gymJamBuddy:
-        gymJam.partnerName || remoteFinishedByName
-          ? {
-              name: remoteFinishedByName || gymJam.partnerName || 'Workout Buddy',
-              roomPin: gymJam.roomPin || '',
+            const est1RM = calculate1RM(s.weightKg, s.reps);
+            if (est1RM > highest1RM) {
+              highest1RM = est1RM;
+              bestLift = {
+                exerciseName: ex.exerciseName,
+                weightKg: s.weightKg,
+                reps: s.reps,
+              };
             }
-          : null,
-      coachAttribution:
-        userRole === 'coach'
-          ? {
-              name: coachProfile.name,
-              businessName: coachProfile.businessName,
-              instagramHandle: coachProfile.instagramHandle,
+
+            if (s.weightKg > topWeight || (s.weightKg === topWeight && s.reps > topReps)) {
+              topWeight = s.weightKg;
+              topReps = s.reps;
             }
-          : linkedCoach
-          ? {
-              name: linkedCoach.name,
-              businessName: linkedCoach.businessName,
-              instagramHandle: linkedCoach.instagramHandle,
-            }
-          : null,
-      exercisesSummary,
-    });
+          });
+
+          exercisesSummary.push({
+            exerciseName: ex.exerciseName,
+            completedSetsCount: completedSets.length,
+            topSetWeight: topWeight,
+            topSetReps: topReps,
+          });
+        }
+      });
+
+      return {
+        id: `RIP-${Math.floor(100000 + Math.random() * 900000)}`,
+        date: todayDate,
+        athleteName,
+        routineName: currentRoutineTitle,
+        durationSeconds: finalDurationSeconds,
+        totalVolumeKg: Math.round(totalVolume),
+        totalSets,
+        totalReps,
+        bestLift,
+        gymJamBuddy:
+          !isBuddy && (gymJam.partnerName || remoteFinishedByName)
+            ? {
+                name: remoteFinishedByName || gymJam.partnerName || 'Workout Buddy',
+                roomPin: gymJam.roomPin || '',
+              }
+            : null,
+        coachAttribution:
+          !isBuddy && userRole === 'coach'
+            ? {
+                name: coachProfile.name,
+                businessName: coachProfile.businessName,
+                instagramHandle: coachProfile.instagramHandle,
+              }
+            : !isBuddy && linkedCoach
+            ? {
+                name: linkedCoach.name,
+                businessName: linkedCoach.businessName,
+                instagramHandle: linkedCoach.instagramHandle,
+              }
+            : null,
+        exercisesSummary,
+      };
+    };
+    setReceipts([
+      ...(completedExercises.length ? [
+        buildReceipt(params.clientName || activeClient?.name || activeUser.displayName, completedExercises),
+      ] : []),
+      ...(localBuddy && buddyLog ? [buildReceipt(localBuddy.displayName, buddyExercises, true)] : []),
+    ]);
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowReceiptModal(true);
+    setIsFinishing(false);
   };
 
   handleFinishWorkoutRef.current = handleFinishWorkout;
@@ -1104,61 +1231,23 @@ export default function ActiveSessionScreen() {
         className="flex-1"
       >
         {/* Header Bar */}
-        <View className="bg-dark-card border-b border-dark-border px-3 py-2 flex-row items-center justify-between shadow-md">
+        <View className="bg-dark-card border-b border-dark-border px-3 py-2 flex-row flex-wrap items-center justify-between gap-y-2 shadow-md">
           {/* Left: Close button and Routine Title */}
-          <View className="flex-row items-center space-x-2 flex-1 mr-3">
-            <TouchableOpacity onPress={handleExitWorkout} className="p-1">
+          <View className="flex-row items-center space-x-2 w-full">
+            <TouchableOpacity onPress={handleExitWorkout} accessibilityRole="button" accessibilityLabel="Leave workout" className="w-12 h-12 items-center justify-center">
               <Ionicons name="close" size={24} color="#A1A1AA" />
             </TouchableOpacity>
             <View className="flex-1">
-              <Text className="text-base font-bold text-white" numberOfLines={1}>
+              <Text className="text-base font-bold text-white">
                 {currentRoutineTitle}
               </Text>
             </View>
           </View>
 
           {/* Right: Jam + Timer Stack, and Finish Button */}
-          <View className="flex-row items-center space-x-2.5">
+          <View className="flex-row items-center justify-between w-full gap-3">
             {/* Jam & Timer Stack (Timer directly under Jam) */}
             <View className="items-end justify-center">
-              {/* Gym Jam Button */}
-              <TouchableOpacity
-                activeOpacity={0.8}
-                onPress={() => setShowGymJamLobby(true)}
-                className={`flex-row items-center px-2.5 py-1 rounded-lg border mb-1 ${
-                  gymJam.connectionStatus === 'connected'
-                    ? 'bg-emerald-500/15 border-emerald-500/60'
-                    : gymJam.connectionStatus === 'connecting'
-                    ? 'bg-amber-500/15 border-amber-500/60'
-                    : 'bg-zinc-800/90 border-zinc-700'
-                }`}
-              >
-                <View
-                  className={`w-2 h-2 rounded-full mr-1.5 ${
-                    gymJam.connectionStatus === 'connected'
-                      ? 'bg-emerald-400'
-                      : gymJam.connectionStatus === 'connecting'
-                      ? 'bg-amber-400'
-                      : 'bg-cyan-400'
-                  }`}
-                />
-                <Text
-                  className={`text-[11px] font-black ${
-                    gymJam.connectionStatus === 'connected'
-                      ? 'text-emerald-400'
-                      : gymJam.connectionStatus === 'connecting'
-                      ? 'text-amber-400'
-                      : 'text-cyan-300'
-                  }`}
-                >
-                  {gymJam.connectionStatus === 'connected'
-                    ? gymJam.partnerName
-                      ? gymJam.partnerName.split(' ')[0]
-                      : gymJam.roomPin
-                    : 'GymBuddy'}
-                </Text>
-              </TouchableOpacity>
-
               {/* Total Workout Timer Badge directly under Jam */}
               <TouchableOpacity
                 activeOpacity={0.75}
@@ -1166,7 +1255,9 @@ export default function ActiveSessionScreen() {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   toggleWorkoutTimer();
                 }}
-                className={`flex-row items-center px-2 py-0.5 rounded-md border ${
+                accessibilityRole="button"
+                accessibilityLabel={isTimerRunning ? 'Pause workout timer' : 'Resume workout timer'}
+                className={`min-h-[48px] flex-row items-center px-3 py-2 rounded-lg border ${
                   isTimerRunning
                     ? 'bg-cyan-950/50 border-cyan-500/40'
                     : 'bg-amber-950/50 border-amber-500/50'
@@ -1178,14 +1269,14 @@ export default function ActiveSessionScreen() {
                   color={isTimerRunning ? '#06B6D4' : '#F59E0B'}
                 />
                 <Text
-                  className={`text-[11px] font-bold font-mono ml-1 ${
+                  className={`text-xs font-bold font-mono ml-1 ${
                     isTimerRunning ? 'text-accent-cyan' : 'text-amber-400'
                   }`}
                 >
                   {formatDuration(secondsElapsed)}
                 </Text>
                 {!isTimerRunning && (
-                  <Text className="text-[9px] font-extrabold text-amber-400 ml-1">PAUSED</Text>
+                  <Text className="text-xs font-extrabold text-amber-400 ml-1">PAUSED</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -1193,8 +1284,9 @@ export default function ActiveSessionScreen() {
             {/* Finish Workout Button */}
             <TouchableOpacity
               activeOpacity={0.8}
-              onPress={() => handleFinishWorkout()}
-              className="bg-accent-cyan px-3.5 py-2.5 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20"
+              onPress={() => { void handleFinishWorkout(); }}
+              disabled={isFinishing}
+              className="bg-accent-cyan min-h-[48px] px-3.5 py-3 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20"
             >
               <Ionicons name="checkmark-done" size={16} color="#09090B" />
               <Text className="text-black font-extrabold text-xs">Finish</Text>
@@ -1202,22 +1294,47 @@ export default function ActiveSessionScreen() {
           </View>
         </View>
 
+        {!localBuddy && !params.joinRoomPin && (
+          <TouchableOpacity accessibilityRole="button"
+            onPress={() => {
+              if (gymJam.roomPin || gymJam.connectionStatus === 'connected' || gymJam.connectionStatus === 'connecting') setShowGymJamLobby(true);
+              else setShowTogether(true);
+            }}
+            className="flex-row items-center gap-2 px-4 min-h-[48px] py-3 border-b border-zinc-700">
+            <Ionicons name="people-outline" size={20} color="#67E8F9" />
+            <Text className="text-base font-bold text-cyan-300 flex-1">
+              {gymJam.connectionStatus === 'connected' ? `Training with ${gymJam.partnerName || 'your friend'}` : gymJam.connectionStatus === 'connecting' ? 'Connecting…' : gymJam.roomPin ? 'Invite your friend' : 'Train together'}
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        <View className="bg-cyan-950 border-b border-cyan-800 px-4 py-3">
+          <Text accessibilityRole="header" accessibilityLiveRegion="polite" className="text-base font-bold text-white">Logging for {viewingLifterName}</Text>
+          <Text accessibilityLiveRegion="polite" className="text-sm text-cyan-200 mt-1">
+            {draftSaveState === 'saving' ? 'Saving draft…' : draftSaveState === 'error' ? 'Draft could not be saved. Keep this workout open and try again.' : 'Draft saved on this phone'}
+          </Text>
+          {draftSaveState === 'error' && <TouchableOpacity accessibilityRole="button" onPress={() => { void persistDraft(secondsElapsed).catch(() => {}); }} className="min-h-[48px] justify-center">
+            <Text className="text-base font-bold text-cyan-200">Retry saving draft</Text>
+          </TouchableOpacity>}
+          {localBuddy?.id === viewingLifterId && <Text className="text-sm text-zinc-200 mt-1">{localBuddy.displayName} · Account not linked. Share their workout after finishing.</Text>}
+        </View>
+
         {/* WORKOUT PARTNERS / LIFTER SWITCHER BAR (Gym Jam Shared Excel View) */}
         {sessionLifters.length > 1 && (
           <View className="bg-zinc-900 border-b border-zinc-800 px-3 py-2.5">
-            <View className="flex-row items-center justify-between mb-2">
+            <View className="flex-row flex-wrap items-center justify-between gap-2 mb-2">
               <View className="flex-row items-center space-x-1.5">
                 <Text className="text-sm">🏋️</Text>
                 <Text className="text-xs font-black tracking-wider text-zinc-300 uppercase">
-                  Workout Partners
+                  {localBuddy ? 'Share this phone' : 'Training together'}
                 </Text>
               </View>
-              <Text className="text-[10px] text-zinc-500 font-medium">
-                Tap name to switch lifter and log sets
+              <Text className="text-xs text-zinc-400 font-medium">
+                Tap a name to log their sets
               </Text>
             </View>
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row">
+            <View className="flex-row flex-wrap gap-2">
               {sessionLifters.map((lifter) => {
                 const isViewing = viewingLifterId === lifter.id;
                 const completedSets = getCompletedCountForUser(lifter.id);
@@ -1225,12 +1342,17 @@ export default function ActiveSessionScreen() {
                 return (
                   <TouchableOpacity
                     key={lifter.id}
+                    style={{ flexGrow: 1, flexBasis: 125 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Log sets for ${lifter.name}`}
+                    accessibilityState={{ selected: isViewing }}
                     activeOpacity={0.8}
                     onPress={() => {
                       Haptics.selectionAsync();
                       setViewingLifterId(lifter.id);
+                      setSetNotice(null);
                     }}
-                    className={`flex-row items-center mr-2 px-3.5 py-2 rounded-xl border ${
+                    className={`flex-row items-center px-3 py-3 min-h-[48px] rounded-xl border ${
                       isViewing
                         ? 'bg-cyan-500/20 border-cyan-400 shadow-md shadow-cyan-500/20'
                         : 'bg-zinc-850 border-zinc-750'
@@ -1258,22 +1380,18 @@ export default function ActiveSessionScreen() {
                         </Text>
                       </View>
                       <Text
-                        className={`text-[10px] font-bold ${
-                          isViewing ? 'text-cyan-300 font-mono' : 'text-zinc-500'
+                        className={`text-xs font-bold ${
+                          isViewing ? 'text-cyan-300 font-mono' : 'text-zinc-400'
                         }`}
                       >
                         {completedSets} {completedSets === 1 ? 'set' : 'sets'}
                       </Text>
                     </View>
-                    {isViewing && (
-                      <View className="ml-2 bg-cyan-400/25 px-1.5 py-0.5 rounded border border-cyan-400/40">
-                        <Text className="text-[9px] font-extrabold text-cyan-300">ACTIVE</Text>
-                      </View>
-                    )}
+
                   </TouchableOpacity>
                 );
               })}
-            </ScrollView>
+            </View>
           </View>
         )}
 
@@ -1282,7 +1400,7 @@ export default function ActiveSessionScreen() {
           <View className="bg-cyan-950/80 border-b border-cyan-500/40 px-3 py-2 flex-row items-center justify-between">
             <View className="flex-row items-center space-x-1.5 flex-1">
               <View className="w-2 h-2 rounded-full bg-cyan-400" />
-              <Text className="text-[11px] font-black text-cyan-300" numberOfLines={1}>
+              <Text className="text-xs font-black text-cyan-300" numberOfLines={1}>
                 COACH DRIVER: {params.clientName || gymJam.partnerName || 'Remote Athlete'}
               </Text>
             </View>
@@ -1299,7 +1417,7 @@ export default function ActiveSessionScreen() {
               >
                 <Ionicons name="flash" size={13} color="#06B6D4" />
                 <Text className="text-xs font-bold text-white flex-1">{toast.message}</Text>
-                <Text className="text-[10px] text-cyan-400 font-mono">LIVE</Text>
+                <Text className="text-xs text-cyan-400 font-mono">LIVE</Text>
               </View>
             ))}
           </View>
@@ -1311,7 +1429,7 @@ export default function ActiveSessionScreen() {
             <View className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 flex-row items-center justify-between">
               <View className="flex-row items-center space-x-1.5">
                 <Ionicons name="checkmark-circle" size={13} color="#10B981" />
-                <Text className="text-[11px] font-medium text-zinc-300">
+                <Text className="text-xs font-medium text-zinc-300">
                   {gymJam.partnerName || 'Partner'} logged Set {partnerLatestSet.setIndex + 1}:{' '}
                   <Text className="font-bold text-emerald-400">
                     {partnerLatestSet.weight}kg × {partnerLatestSet.reps}
@@ -1319,41 +1437,30 @@ export default function ActiveSessionScreen() {
                   {partnerLatestSet.rpe ? ` @ RPE ${partnerLatestSet.rpe}` : ''}
                 </Text>
               </View>
-              <Text className="text-[9px] font-mono text-zinc-500">SYNCED</Text>
+              <Text className="text-xs font-mono text-zinc-400">SYNCED</Text>
             </View>
           </View>
         )}
 
+        {setNotice && (
+          <Text accessibilityRole="alert" accessibilityLiveRegion="polite" className="bg-amber-950 text-amber-200 px-4 py-3 text-sm">
+            {setNotice}
+          </Text>
+        )}
         {/* Scrollable Exercise Cards */}
         <ScrollView className="flex-1 px-3 py-4" showsVerticalScrollIndicator={false}>
           {currentSessionExercises.map((exItem, exIdx) => {
             const firstSetWeight = exItem.sets[0]?.weightKg || 0;
 
-            // Determine benchmark data for the viewed lifter
-            let benchmarkBestWorkingSet: { weightKg: number; reps: number; date?: string } | undefined;
-            let benchmarkRepPR: number = 0;
-            let benchmarkEst1RM: number = 0;
-
-            if (viewingLifterId === activeUser.id) {
-              const userLogs = workoutLogs.filter((l) => l.userId === activeUser.id);
-              const hist = getExerciseHistory(userLogs, exItem.exerciseId, firstSetWeight);
-              benchmarkBestWorkingSet = hist.bestWorkingSet;
-              benchmarkRepPR = hist.maxRepsAtWeight;
-              benchmarkEst1RM = hist.estimated1RM;
-            } else {
-              const partnerExBench = partnerBenchmarks[exItem.exerciseId];
-              if (partnerExBench) {
-                benchmarkBestWorkingSet = partnerExBench.bestWorkingSet;
-                benchmarkRepPR = partnerExBench.maxRepsAtWeight;
-                benchmarkEst1RM = partnerExBench.estimated1RM;
-              } else {
-                const partnerLogs = workoutLogs.filter((l) => l.userId === viewingLifterId);
-                const hist = getExerciseHistory(partnerLogs, exItem.exerciseId, firstSetWeight);
-                benchmarkBestWorkingSet = hist.bestWorkingSet;
-                benchmarkRepPR = hist.maxRepsAtWeight;
-                benchmarkEst1RM = hist.estimated1RM;
-              }
-            }
+            const lifterLogs = workoutLogs.filter((log) => log.userId === viewingLifterId);
+            const history = getExerciseHistory(lifterLogs, exItem.exerciseId, firstSetWeight);
+            const remoteBenchmarks = viewingLifterId === gymJam.partnerUserId
+              ? partnerBenchmarks[exItem.exerciseId]
+              : undefined;
+            const benchmarks = remoteBenchmarks || history;
+            const benchmarkBestWorkingSet = benchmarks.bestWorkingSet;
+            const benchmarkRepPR = benchmarks.maxRepsAtWeight;
+            const benchmarkEst1RM = benchmarks.estimated1RM;
 
             return (
               <View
@@ -1364,19 +1471,6 @@ export default function ActiveSessionScreen() {
                 <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-2.5">
                   <View className="flex-1 pr-2">
                     <Text className="text-lg font-bold text-white">{exItem.exerciseName}</Text>
-                    <View className="flex-row items-center mt-0.5">
-                      <Text className="text-xs text-zinc-400">Lifter: </Text>
-                      <View className="px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/50">
-                        <Text className="text-[11px] font-bold text-cyan-300">
-                          {viewingLifterName}
-                        </Text>
-                      </View>
-                      {sessionLifters.length > 1 && (
-                        <Text className="text-[11px] text-zinc-400 font-semibold ml-1.5">
-                          • Shared Sheet (Tap partner above)
-                        </Text>
-                      )}
-                    </View>
                   </View>
                   <View className="flex-row items-center space-x-1.5">
                     <TouchableOpacity
@@ -1384,42 +1478,50 @@ export default function ActiveSessionScreen() {
                         setSwapTargetIndex(exIdx);
                         setShowSwapModal(true);
                       }}
-                      className="bg-zinc-800 border border-zinc-700 px-2.5 py-1.5 rounded-lg flex-row items-center space-x-1"
+                      className="bg-zinc-800 border border-zinc-700 px-2.5 min-h-[48px] py-2 rounded-lg flex-row items-center space-x-1"
                     >
                       <Ionicons name="swap-horizontal" size={14} color="#A1A1AA" />
-                      <Text className="text-[11px] text-zinc-300 font-medium">Swap</Text>
+                      <Text className="text-xs text-zinc-300 font-medium">Swap</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
 
+                <TouchableOpacity accessibilityRole="button" accessibilityState={{ expanded: Boolean(expandedBests[exItem.exerciseId]) }}
+                  accessibilityLabel={`Personal bests for ${exItem.exerciseName}`}
+                  onPress={() => setExpandedBests((previous) => ({ ...previous, [exItem.exerciseId]: !previous[exItem.exerciseId] }))}
+                  className="min-h-[48px] flex-row items-center gap-2 mb-2">
+                  <Text className="text-sm font-semibold text-zinc-300">Personal bests</Text>
+                  <Ionicons name={expandedBests[exItem.exerciseId] ? 'chevron-up' : 'chevron-down'} size={16} color="#D4D4D8" />
+                </TouchableOpacity>
+                {expandedBests[exItem.exerciseId] && (<>
                 {/* Historical Benchmarks Card */}
                 <View className="bg-zinc-900/90 border border-zinc-800/80 rounded-xl p-3 mb-4">
-                  <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
-                    Benchmark Reference ({viewingLifterName})
+                  <Text className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2">
+                    Personal bests · {viewingLifterName}
                   </Text>
                   <View className="flex-row justify-between items-center">
                     {/* Best Working Set (Not 1RM) */}
                     <View className="flex-1 mr-2 border-r border-zinc-800 pr-2">
-                      <Text className="text-[10px] text-zinc-500 font-medium">Best Set (&gt;1 rep)</Text>
+                      <Text className="text-xs text-zinc-400 font-medium">Best Set (&gt;1 rep)</Text>
                       {benchmarkBestWorkingSet ? (
                         <View>
                           <Text className="text-xs font-bold text-accent-cyan">
-                            {benchmarkBestWorkingSet.weightKg}{weightUnit} × {benchmarkBestWorkingSet.reps}
+                            {fromKg(benchmarkBestWorkingSet.weightKg)} {weightUnit} × {benchmarkBestWorkingSet.reps}
                           </Text>
                           {benchmarkBestWorkingSet.date ? (
-                            <Text className="text-[9px] text-zinc-500">
+                            <Text className="text-xs text-zinc-400">
                               {benchmarkBestWorkingSet.date}
                             </Text>
                           ) : null}
                         </View>
                       ) : (
-                        <Text className="text-xs text-zinc-500 italic">No history</Text>
+                        <Text className="text-xs text-zinc-400 italic">No history</Text>
                       )}
                     </View>
 
                     {/* Max Reps at Weight */}
                     <View className="flex-1 mr-2 border-r border-zinc-800 pr-2">
-                      <Text className="text-[10px] text-zinc-500 font-medium">Rep PR ({firstSetWeight}{weightUnit})</Text>
+                      <Text className="text-xs text-zinc-400 font-medium">Rep PR ({fromKg(firstSetWeight)} {weightUnit})</Text>
                       <Text className="text-xs font-bold text-accent-emerald">
                         {benchmarkRepPR > 0 ? `${benchmarkRepPR} Reps` : '—'}
                       </Text>
@@ -1427,54 +1529,48 @@ export default function ActiveSessionScreen() {
 
                     {/* Estimated 1RM */}
                     <View className="flex-1">
-                      <Text className="text-[10px] text-zinc-500 font-medium">Est. 1RM</Text>
+                      <Text className="text-xs text-zinc-400 font-medium">Est. 1RM</Text>
                       <Text className="text-xs font-bold text-accent-orange">
-                        {benchmarkEst1RM > 0 ? `${benchmarkEst1RM} ${weightUnit}` : '—'}
+                        {benchmarkEst1RM > 0 ? `${fromKg(benchmarkEst1RM)} ${weightUnit}` : '—'}
                       </Text>
                     </View>
                   </View>
                 </View>
 
+                </>)}
+
+                {localBuddy?.id === viewingLifterId && !history.previousSessionSets.length && (
+                  <Text className="text-xs text-zinc-400 mb-3">
+                    No previous sets for {localBuddy.displayName} on this phone. Before your next workout, open Workout history, select their name, and import a workout code shared from their app.
+                  </Text>
+                )}
+
                 {/* Sets Header */}
                 <View className="flex-row items-center px-1 mb-2">
-                  <Text className="w-10 text-[11px] font-bold text-zinc-500 text-center">SET</Text>
-                  <Text className="w-20 text-[11px] font-bold text-zinc-500 text-center">TYPE</Text>
-                  <Text className="flex-1 text-[11px] font-bold text-zinc-500 text-center">{weightUnit.toUpperCase()}</Text>
-                  <Text className="flex-1 text-[11px] font-bold text-zinc-500 text-center">REPS</Text>
-                  <Text className="w-12 text-[11px] font-bold text-zinc-500 text-center">DONE</Text>
+                  <Text className="w-8 text-xs font-bold text-zinc-400 text-center">SET</Text>
+                  <Text className="w-20 text-xs font-bold text-zinc-400 text-center">TYPE</Text>
+                  <Text className="flex-1 text-xs font-bold text-zinc-400 text-center">{weightUnit.toUpperCase()}</Text>
+                  <Text className="flex-1 text-xs font-bold text-zinc-400 text-center">REPS</Text>
+                  <Text className="w-12 text-xs font-bold text-zinc-400 text-center">DONE</Text>
                 </View>
 
                 {/* Set Entry Rows */}
-                {exItem.sets.map((set, setIdx) => {
-                  const set1RM = calculate1RM(set.weightKg, set.reps);
-                  const lifterLogs = workoutLogs.filter((l) => l.userId === viewingLifterId);
-                  const lifterExHistory = getExerciseHistory(lifterLogs, exItem.exerciseId, firstSetWeight);
-                  const prevSessionSet = lifterExHistory.previousSessionSets?.[setIdx];
-                  const ghostWeight = prevSessionSet && prevSessionSet.weightKg > 0
-                    ? prevSessionSet.weightKg
-                    : (setIdx > 0 && exItem.sets[setIdx - 1]?.weightKg > 0 ? exItem.sets[setIdx - 1].weightKg : 20);
-                  const ghostReps = prevSessionSet && prevSessionSet.reps > 0
-                    ? prevSessionSet.reps
-                    : (setIdx > 0 && exItem.sets[setIdx - 1]?.reps > 0 ? exItem.sets[setIdx - 1].reps : 8);
+                {exItem.sets.map((set: DraftSet, setIdx) => {
+                  const preceding = exItem.sets.slice(0, setIdx).reverse().find((entry) => entry.isCompleted);
+                  const lastSessionSet = history.previousSessionSets[setIdx];
+                  const previous = lastSessionSet || preceding;
+                  const label = `${exItem.exerciseName}, set ${setIdx + 1}`;
 
                   return (
-                    <View
-                      key={setIdx}
-                      className={`flex-row items-center py-2 px-1 rounded-xl mb-2 border ${
+                    <View key={setIdx} className="mb-2">
+                      <View className={`flex-row items-center py-1 px-1 rounded-xl border ${
                         set.isCompleted
                           ? 'bg-emerald-950/20 border-emerald-900/40'
                           : 'bg-zinc-900/60 border-zinc-800/60'
                       }`}
                     >
                       {/* Set Number */}
-                      <TouchableOpacity
-                        onLongPress={() => handleRemoveSet(exIdx, setIdx)}
-                        className="w-10 items-center justify-center"
-                      >
-                        <View className="w-7 h-7 rounded-full bg-zinc-800 items-center justify-center border border-zinc-700">
-                          <Text className="text-xs font-bold text-white">{setIdx + 1}</Text>
-                        </View>
-                      </TouchableOpacity>
+                      <Text className="w-8 text-center text-xs font-bold text-white">{setIdx + 1}</Text>
 
                       {/* Set Type Selector */}
                       <TouchableOpacity
@@ -1483,7 +1579,7 @@ export default function ActiveSessionScreen() {
                           const nextType = SET_TYPES[(currentTypeIdx + 1) % SET_TYPES.length];
                           handleUpdateSet(exIdx, setIdx, 'type', nextType);
                         }}
-                        className={`w-20 py-1.5 px-1 rounded-lg items-center justify-center border ${
+                        className={`w-20 min-h-[48px] py-2 px-1 rounded-lg items-center justify-center border ${
                           set.type === 'Warmup'
                             ? 'bg-amber-950/40 border-amber-500/50'
                             : set.type === 'Drop'
@@ -1494,7 +1590,7 @@ export default function ActiveSessionScreen() {
                         }`}
                       >
                         <Text
-                          className={`text-[10px] font-bold ${
+                          className={`text-xs font-bold ${
                             set.type === 'Warmup'
                               ? 'text-amber-400'
                               : set.type === 'Drop'
@@ -1511,19 +1607,17 @@ export default function ActiveSessionScreen() {
                       {/* Weight Input */}
                       <View className="flex-1 mx-1">
                         <TextInput
-                          keyboardType="numeric"
-                          value={set.weightKg > 0 ? set.weightKg.toString() : ''}
-                          placeholder={ghostWeight > 0 ? ghostWeight.toString() : '20'}
+                          keyboardType="decimal-pad"
+                          accessibilityLabel={`${label}, weight in ${weightUnit}`}
+                          editable={!set.isCompleted}
+                          value={set.weightInput ?? (set.weightKg > 0 || set.isCompleted ? String(fromKg(set.weightKg)) : '')}
+                          placeholder="—"
                           placeholderTextColor="#71717A"
-                          onChangeText={(text) =>
-                            handleUpdateSet(
-                              exIdx,
-                              setIdx,
-                              'weightKg',
-                              parseFloat(text) || 0
-                            )
-                          }
-                          className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-1 rounded-lg font-bold text-sm"
+                          onChangeText={(text) => {
+                            const value = parseSetWeight(text) ?? 0;
+                            handleUpdateSet(exIdx, setIdx, 'weightKg', weightUnit === 'lbs' ? value * KG_PER_LB : value, text);
+                          }}
+                          className="bg-zinc-950 border border-zinc-800 text-white text-center min-h-[48px] py-2 px-1 rounded-lg font-bold text-base"
                         />
                       </View>
 
@@ -1531,20 +1625,23 @@ export default function ActiveSessionScreen() {
                       <View className="flex-1 mx-1">
                         <TextInput
                           keyboardType="number-pad"
-                          value={set.reps > 0 ? set.reps.toString() : ''}
-                          placeholder={ghostReps > 0 ? ghostReps.toString() : '8'}
+                          accessibilityLabel={`${label}, reps`}
+                          editable={!set.isCompleted}
+                          value={set.repsInput ?? (set.reps > 0 ? String(set.reps) : '')}
+                          placeholder="—"
                           placeholderTextColor="#71717A"
-                          onChangeText={(text) =>
-                            handleUpdateSet(exIdx, setIdx, 'reps', parseInt(text, 10) || 0)
-                          }
-                          className="bg-zinc-950 border border-zinc-800 text-white text-center py-1.5 px-2 rounded-lg font-bold text-sm"
+                          onChangeText={(text) => handleUpdateSet(exIdx, setIdx, 'reps', parseSetReps(text) ?? 0, text)}
+                          className="bg-zinc-950 border border-zinc-800 text-white text-center min-h-[48px] py-2 px-2 rounded-lg font-bold text-base"
                         />
                       </View>
 
                       {/* Checkbox Trigger with Haptics */}
                       <TouchableOpacity
                         onPress={() => handleToggleComplete(exIdx, setIdx)}
-                        className={`w-12 h-10 rounded-lg items-center justify-center border ${
+                        accessibilityRole="checkbox"
+                        accessibilityLabel={`Complete ${label}`}
+                        accessibilityState={{ checked: Boolean(set.isCompleted) }}
+                        className={`w-12 h-12 rounded-lg items-center justify-center border ${
                           set.isCompleted
                             ? 'bg-accent-emerald border-accent-emerald'
                             : 'bg-zinc-800 border-zinc-700'
@@ -1556,6 +1653,36 @@ export default function ActiveSessionScreen() {
                           color={set.isCompleted ? '#FFFFFF' : '#A1A1AA'}
                         />
                       </TouchableOpacity>
+                      </View>
+                      <View className="flex-row flex-wrap justify-end gap-2">
+                        {!set.isCompleted && previous && (
+                          <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel={`Use ${fromKg(previous.weightKg)} ${weightUnit} and ${previous.reps} reps for ${label}`}
+                            onPress={() => {
+                              handleUpdateSet(exIdx, setIdx, 'weightKg', previous.weightKg, String(fromKg(previous.weightKg)));
+                              handleUpdateSet(exIdx, setIdx, 'reps', previous.reps, String(previous.reps));
+                              setSetNotice(null);
+                            }}
+                            className="min-h-[48px] px-2 justify-center flex-shrink"
+                          >
+                            <Text className="text-xs font-semibold text-cyan-300">
+                              {lastSessionSet ? 'Last time' : 'Earlier set'} · {fromKg(previous.weightKg)} {weightUnit} × {previous.reps} · Use these values
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                        {exItem.sets.length > 1 && (
+                          <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${label}`}
+                            onPress={() => handleRemoveSet(exIdx, setIdx)}
+                            className="min-h-[44px] px-2 flex-row items-center gap-1"
+                          >
+                            <Ionicons name="trash-outline" size={14} color="#A1A1AA" />
+                            <Text className="text-xs text-zinc-400">Remove</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
                     </View>
                   );
                 })}
@@ -1585,6 +1712,24 @@ export default function ActiveSessionScreen() {
             <Text className="text-black font-extrabold text-base">+ Add Exercise to Workout</Text>
           </TouchableOpacity>
         </ScrollView>
+
+        <Modal visible={showExit} transparent animationType="fade" onRequestClose={() => setShowExit(false)}>
+          <View className="flex-1 bg-black/80 justify-center px-5">
+            <View className="bg-dark-card border border-zinc-800 rounded-2xl p-5 gap-3">
+              <Text className="text-lg font-bold text-white">Leave workout?</Text>
+              <Text className="text-sm text-zinc-300">You can resume this workout from Workouts.</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={() => { setShowExit(false); void exitWithDraft(false); }} className="bg-accent-cyan p-3 rounded-xl items-center">
+                <Text className="text-black font-bold">Save and exit</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" onPress={() => setShowExit(false)} className="bg-zinc-800 p-3 rounded-xl items-center">
+                <Text className="text-white font-bold">Keep training</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" onPress={() => { setShowExit(false); void exitWithDraft(true); }} className="p-3 items-center">
+                <Text className="text-rose-400 font-bold">Discard workout</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
 
         {/* Swap Exercise Modal */}
         {showSwapModal && (
@@ -1794,8 +1939,55 @@ export default function ActiveSessionScreen() {
           </Modal>
         )}
 
+        <Modal
+          visible={showLocalBuddy}
+          transparent
+          animationType="fade"
+          onRequestClose={() => { if (!isAddingBuddy) setShowLocalBuddy(false); }}
+        >
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} className="flex-1 bg-black/80 justify-center px-5">
+            <View className="bg-dark-card border border-zinc-800 rounded-2xl p-5 gap-3">
+              <Text className="text-lg font-bold text-white">
+                {partnerUser ? `Train with ${partnerUser.displayName}` : 'Add a workout buddy'}
+              </Text>
+              <Text className="text-sm text-zinc-300">
+                Tap each name to log their sets. Your buddy’s workouts stay on this phone and are listed separately in Workout history. Their account is not linked. Import their previous workouts from Workout history before training to see their last weights.
+              </Text>
+              {!partnerUser && (
+                <TextInput
+                  accessibilityLabel="Buddy name"
+                  placeholder="Buddy’s name"
+                  placeholderTextColor="#A1A1AA"
+                  value={buddyName}
+                  onChangeText={setBuddyName}
+                  autoCapitalize="words"
+                  maxLength={40}
+                  className="bg-zinc-900 border border-zinc-700 rounded-xl p-3 text-white"
+                />
+              )}
+              {!!buddyError && <Text accessibilityRole="alert" className="text-sm text-rose-300">{buddyError}</Text>}
+              <TouchableOpacity
+                accessibilityRole="button"
+                disabled={isAddingBuddy || (!partnerUser && !buddyName.trim())}
+                onPress={() => { void handleAddLocalBuddy(); }}
+                className={`p-3 rounded-xl items-center ${isAddingBuddy || (!partnerUser && !buddyName.trim()) ? 'bg-zinc-700' : 'bg-accent-cyan'}`}
+              >
+                <Text className="text-black font-bold">{isAddingBuddy ? 'Saving…' : 'Start sharing this phone'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" disabled={isAddingBuddy} onPress={() => setShowLocalBuddy(false)} className="p-3 items-center">
+                <Text className="text-white font-bold">Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        <TrainTogetherModal visible={showTogether} onClose={() => setShowTogether(false)}
+          canSharePhone={showAddBuddy}
+          onSharePhone={() => { setShowTogether(false); setBuddyError(''); setShowLocalBuddy(true); }}
+          onSeparatePhones={() => { setShowTogether(false); setShowGymJamLobby(true); }} />
+
         {/* Gym Jam Lobby Modal */}
-        {showGymJamLobby && (
+        {showGymJamLobby && !localBuddy && (
           <GymJamLobbyModal
             visible={showGymJamLobby}
             onClose={() => setShowGymJamLobby(false)}
@@ -1839,13 +2031,14 @@ export default function ActiveSessionScreen() {
         {showReceiptModal && (
           <WorkoutReceiptModal
             visible={showReceiptModal}
-            receiptData={receiptData}
+            receiptData={receipts[0] || null}
+            alternateReceipt={receipts[1]}
             onClose={() => {
               if (gymJam.connectionStatus === 'connected') {
                 gymJam.disconnect();
               }
               setShowReceiptModal(false);
-              router.back();
+              leave();
             }}
           />
         )}

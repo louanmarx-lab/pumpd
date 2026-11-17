@@ -18,11 +18,32 @@ import { calculateEmpiricalTDEE } from '../../../src/utils/tdee';
 import { MealArchetypesQuickAdd } from '../../../src/components/MealArchetypesQuickAdd';
 import { ProteinRecommendationCard } from '../../../src/components/ProteinRecommendationCard';
 import { Meal } from '../../../src/types';
+import {
+  formatLocalDate,
+  getLocalDate,
+  addDaysToLocalDate,
+  parseLocalDate,
+  isValidDateString,
+  getRelativeDateLabel,
+  isValidNutritionValue,
+} from '../../../src/utils/localDate';
 
-const getFormattedDate = (offsetDays: number = 0) => {
-  const d = new Date(Date.now() + offsetDays * 86400000);
-  return d.toISOString().split('T')[0];
-};
+const CALENDAR_MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+const CALENDAR_DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const TOTAL_SEGMENTS = 40;
 const GAUGE_SIZE = 208;
@@ -62,36 +83,83 @@ export default function NutritionScreen() {
     ? [managedClient.id, managedClient.linkedUserId].filter(Boolean) as string[]
     : [activeUser.id];
 
-  const todayStr = getFormattedDate(0);
+  const todayStr = getLocalDate(0);
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const currentDateStr = selectedDate;
 
-  // Jump to Date Modal
-  const [showDatePickerModal, setShowDatePickerModal] = useState(false);
+  // Usable Calendar Picker Modal State
+  const [datePickerTarget, setDatePickerTarget] = useState<'day' | 'meal' | null>(null);
+  const [dateError, setDateError] = useState(false);
+  const [calYear, setCalYear] = useState<number>(() => {
+    const p = parseLocalDate(todayStr);
+    return (p || new Date()).getFullYear();
+  });
+  const [calMonth, setCalMonth] = useState<number>(() => {
+    const p = parseLocalDate(todayStr);
+    return p ? p.getMonth() : 0;
+  });
   const [jumpDateInput, setJumpDateInput] = useState(todayStr);
 
   const handlePrevDay = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const d = new Date(selectedDate + 'T12:00:00');
-    d.setDate(d.getDate() - 1);
-    setSelectedDate(d.toISOString().split('T')[0]);
+    setSelectedDate((prev) => addDaysToLocalDate(prev, -1));
   };
 
   const handleNextDay = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const d = new Date(selectedDate + 'T12:00:00');
-    d.setDate(d.getDate() + 1);
-    setSelectedDate(d.toISOString().split('T')[0]);
+    setSelectedDate((prev) => addDaysToLocalDate(prev, 1));
   };
 
   const getDateLabel = (dateStr: string) => {
-    if (dateStr === todayStr) return 'Today';
-    const yDay = getFormattedDate(-1);
-    if (dateStr === yDay) return 'Yesterday';
-    const tomDay = getFormattedDate(1);
-    if (dateStr === tomDay) return 'Tomorrow';
-    return dateStr;
+    return getRelativeDateLabel(dateStr);
   };
+
+  const handleCalPrevMonth = () => {
+    Haptics.selectionAsync();
+    if (calMonth === 0) {
+      setCalMonth(11);
+      setCalYear((prev) => prev - 1);
+    } else {
+      setCalMonth((prev) => prev - 1);
+    }
+  };
+
+  const handleCalNextMonth = () => {
+    Haptics.selectionAsync();
+    if (calMonth === 11) {
+      setCalMonth(0);
+      setCalYear((prev) => prev + 1);
+    } else {
+      setCalMonth((prev) => prev + 1);
+    }
+  };
+
+  // Calendar days grid for displayed month
+  const calendarDays = useMemo(() => {
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    // Monday as first day of week: (0 Sunday -> 6, 1 Mon -> 0, etc.)
+    const firstDayIndex = (new Date(calYear, calMonth, 1).getDay() + 6) % 7;
+    const days: ({ dayNumber: number; dateStr: string } | null)[] = [];
+    for (let i = 0; i < firstDayIndex; i++) {
+      days.push(null);
+    }
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${calYear}-${String(calMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      days.push({ dayNumber: d, dateStr });
+    }
+    return days;
+  }, [calYear, calMonth]);
+
+  // Set of dates with logged meals for dot indicators
+  const loggedNutritionDates = useMemo(() => {
+    const set = new Set<string>();
+    nutritionLogs.forEach((log) => {
+      if (effectiveUserIds.includes(log.userId) && (log.meals?.length || 0) > 0) {
+        set.add(log.date);
+      }
+    });
+    return set;
+  }, [nutritionLogs, effectiveUserIds.join(',')]);
 
   // 4-Week Empirical Maintenance (TDEE) Calculation (scoped to effective user)
   const tdeeResult = useMemo(() => {
@@ -111,14 +179,29 @@ export default function NutritionScreen() {
   };
 
   // Fast Input Modal State
+  const [mealError, setMealError] = useState<string | null>(null);
   const [showAddMealModal, setShowAddMealModal] = useState(false);
   const [mealLabel, setMealLabel] = useState('');
   const [calories, setCalories] = useState('');
   const [protein, setProtein] = useState('');
   const [carbs, setCarbs] = useState('');
   const [fats, setFats] = useState('');
-  const [mealDateOption, setMealDateOption] = useState<'selected' | 'today' | 'yesterday' | 'custom'>('selected');
-  const [customMealDate, setCustomMealDate] = useState(todayStr);
+  const [mealDate, setMealDate] = useState(todayStr);
+  const openDatePicker = (target: 'day' | 'meal') => {
+    const value = target === 'meal' ? mealDate : selectedDate;
+    const date = parseLocalDate(value) || new Date();
+    setCalYear(date.getFullYear());
+    setCalMonth(date.getMonth());
+    setJumpDateInput(value);
+    setDateError(false);
+    setDatePickerTarget(target);
+  };
+  const selectCalendarDate = (value: string) => {
+    if (datePickerTarget === 'meal') setMealDate(value);
+    else setSelectedDate(value);
+    setDatePickerTarget(null);
+  };
+  const calendarSelection = datePickerTarget === 'meal' ? mealDate : selectedDate;
   const [mealRecipe, setMealRecipe] = useState('');
 
   // Target Editing State
@@ -192,18 +275,18 @@ export default function NutritionScreen() {
   };
 
   const handleLogExactWater = (amount?: number) => {
-    const ml = amount ?? parseInt(customWaterInput.trim(), 10);
-    if (!ml || isNaN(ml) || ml <= 0) {
-      Alert.alert('Enter Amount', 'Please enter a valid amount in ml to add.');
+    const raw = amount ?? parseFloat(customWaterInput.trim());
+    if (!isValidNutritionValue(raw) || raw <= 0) {
+      Alert.alert('Enter Amount', 'Please enter a valid positive number in ml to add.');
       return;
     }
-    handleAddWater(ml);
+    handleAddWater(raw);
     setCustomWaterInput('');
   };
 
   const handleSaveHydrationGoal = (presetMl?: number) => {
-    const chosen = presetMl ?? parseInt(goalWaterInput.trim(), 10);
-    if (!chosen || isNaN(chosen) || chosen < 500) {
+    const chosen = presetMl ?? parseFloat(goalWaterInput.trim());
+    if (!isValidNutritionValue(chosen) || chosen < 500) {
       Alert.alert('Invalid Goal', 'Please enter a daily hydration goal of at least 500 ml.');
       return;
     }
@@ -250,48 +333,72 @@ export default function NutritionScreen() {
     userMetrics.length > 0 ? userMetrics[userMetrics.length - 1].weightKg : 75;
 
   const handleSaveTargets = () => {
-    const c = parseInt(targetCaloriesInput, 10) || 2000;
-    const p = parseInt(targetProteinInput, 10) || 150;
-    const cb = parseInt(targetCarbsInput, 10) || 200;
-    const f = parseInt(targetFatsInput, 10) || 60;
-    const w = parseInt(targetWaterInput, 10) || waterTargetMl || 3000;
+    const c = targetCaloriesInput.trim() ? parseFloat(targetCaloriesInput.trim()) : 2000;
+    const p = targetProteinInput.trim() ? parseFloat(targetProteinInput.trim()) : 150;
+    const cb = targetCarbsInput.trim() ? parseFloat(targetCarbsInput.trim()) : 200;
+    const f = targetFatsInput.trim() ? parseFloat(targetFatsInput.trim()) : 60;
+    const w = targetWaterInput.trim() ? parseFloat(targetWaterInput.trim()) : (waterTargetMl || 3000);
 
-    if (c <= 0 && p <= 0 && cb <= 0 && f <= 0) {
-      Alert.alert('Invalid Targets', 'Please enter valid target values.');
+    if (
+      !isValidNutritionValue(c) ||
+      !isValidNutritionValue(p) ||
+      !isValidNutritionValue(cb) ||
+      !isValidNutritionValue(f) ||
+      !isValidNutritionValue(w) ||
+      c <= 0 ||
+      w <= 0
+    ) {
+      Alert.alert('Invalid Targets', 'Please enter valid non-negative, finite numbers for all targets.');
       return;
     }
 
     updateMacroTargets({
-      calories: c,
-      protein: p,
-      carbs: cb,
-      fats: f,
-      dailyProteinGoalGrams: p,
-      waterTargetMl: Math.max(500, w),
+      calories: Math.round(c),
+      protein: Math.round(p),
+      carbs: Math.round(cb),
+      fats: Math.round(f),
+      dailyProteinGoalGrams: Math.round(p),
+      waterTargetMl: Math.max(500, Math.round(w)),
     });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setShowEditTargetsModal(false);
   };
 
   const handleSaveMeal = () => {
-    const calNum = parseFloat(calories) || 0;
-    const pNum = parseFloat(protein) || 0;
-    const cNum = parseFloat(carbs) || 0;
-    const fNum = parseFloat(fats) || 0;
+    setMealError(null);
+    const calRaw = calories.trim();
+    const pRaw = protein.trim();
+    const cRaw = carbs.trim();
+    const fRaw = fats.trim();
 
-    if (calNum <= 0 && pNum <= 0 && cNum <= 0 && fNum <= 0) {
-      Alert.alert('Invalid Entry', 'Please enter at least calories or macros.');
+    const calNum = calRaw ? Number(calRaw.replace(',', '.')) : 0;
+    const pNum = pRaw ? Number(pRaw.replace(',', '.')) : 0;
+    const cNum = cRaw ? Number(cRaw.replace(',', '.')) : 0;
+    const fNum = fRaw ? Number(fRaw.replace(',', '.')) : 0;
+
+    // Reject negative or non-finite nutrition values
+    if (
+      !isValidNutritionValue(calNum) ||
+      !isValidNutritionValue(pNum) ||
+      !isValidNutritionValue(cNum) ||
+      !isValidNutritionValue(fNum)
+    ) {
+      setMealError('Enter a number of zero or more for each nutrition value.');
       return;
     }
 
-    const mealTargetDate =
-      mealDateOption === 'selected'
-        ? selectedDate
-        : mealDateOption === 'today'
-        ? todayStr
-        : mealDateOption === 'yesterday'
-        ? getFormattedDate(-1)
-        : customMealDate.trim() || selectedDate;
+    if (calNum <= 0 && pNum <= 0 && cNum <= 0 && fNum <= 0) {
+      setMealError('Enter calories or at least one macro greater than zero.');
+      return;
+    }
+
+    const mealTargetDate = mealDate;
+
+    // Reject impossible dates like 2024-02-30 or month 13
+    if (!isValidDateString(mealTargetDate)) {
+      setMealError('Choose a valid calendar date.');
+      return;
+    }
 
     saveNutritionMeal(mealTargetDate, {
       label: mealLabel.trim() || 'Quick Macro Log',
@@ -311,7 +418,6 @@ export default function NutritionScreen() {
     setCarbs('');
     setFats('');
     setMealRecipe('');
-    setMealDateOption('selected');
     setShowAddMealModal(false);
   };
 
@@ -382,6 +488,8 @@ export default function NutritionScreen() {
       <View className="flex-row items-center justify-between bg-dark-card border border-dark-border p-3 rounded-2xl mb-4">
         <TouchableOpacity
           onPress={handlePrevDay}
+          accessibilityRole="button"
+          accessibilityLabel="Previous day"
           className="p-2 bg-zinc-800 rounded-xl"
         >
           <Ionicons name="chevron-back" size={20} color="#F4F4F5" />
@@ -389,11 +497,9 @@ export default function NutritionScreen() {
 
         <TouchableOpacity
           activeOpacity={0.7}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setJumpDateInput(selectedDate);
-            setShowDatePickerModal(true);
-          }}
+          onPress={() => openDatePicker('day')}
+          accessibilityRole="button"
+          accessibilityLabel={`Selected date ${selectedDate}. Tap to open calendar picker`}
           className="items-center px-4 py-1.5 rounded-xl bg-zinc-900/90 border border-zinc-800"
         >
           <View className="flex-row items-center space-x-1.5">
@@ -403,15 +509,33 @@ export default function NutritionScreen() {
             </Text>
             <Ionicons name="chevron-down" size={12} color="#71717A" />
           </View>
-          <Text className="text-[11px] text-zinc-400 font-medium">{selectedDate}</Text>
+          <Text className="text-xs text-zinc-400 font-medium">{selectedDate}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={handleNextDay}
-          className="p-2 bg-zinc-800 rounded-xl"
-        >
-          <Ionicons name="chevron-forward" size={20} color="#F4F4F5" />
-        </TouchableOpacity>
+        <View className="flex-row items-center space-x-1.5">
+          {selectedDate !== todayStr && (
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.selectionAsync();
+                setSelectedDate(todayStr);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Jump to today"
+              className="px-2.5 py-1.5 bg-cyan-500/20 border border-cyan-500/40 rounded-xl"
+            >
+              <Text className="text-xs font-black text-cyan-400">Today</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            onPress={handleNextDay}
+            accessibilityRole="button"
+            accessibilityLabel="Next day"
+            className="p-2 bg-zinc-800 rounded-xl"
+          >
+            <Ionicons name="chevron-forward" size={20} color="#F4F4F5" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Main Calories Progress Card */}
@@ -423,7 +547,7 @@ export default function NutritionScreen() {
               <Text className="text-lg font-bold text-white">{activeUser.displayName}</Text>
               {latestWeightKg > 0 && (
                 <View className="bg-zinc-800/90 px-2 py-0.5 rounded-md border border-zinc-700">
-                  <Text className="text-[11px] font-bold text-zinc-300">
+                  <Text className="text-xs font-bold text-zinc-300">
                     {latestWeightKg} {weightUnit}
                   </Text>
                 </View>
@@ -433,6 +557,8 @@ export default function NutritionScreen() {
           <TouchableOpacity
             activeOpacity={0.8}
             onPress={openEditTargets}
+            accessibilityRole="button"
+            accessibilityLabel={`Daily targets: ${totals.calories} of ${targets.calories} kcal. Tap to edit`}
             className="flex-row items-center space-x-1.5 bg-accent-cyan/20 border border-accent-cyan px-3 py-1.5 rounded-full"
           >
             <Ionicons name="pencil" size={11} color="#06B6D4" />
@@ -461,7 +587,7 @@ export default function NutritionScreen() {
               }`}
             >
               <Text
-                className={`text-[9px] font-extrabold uppercase ${
+                className={`text-xs font-extrabold uppercase ${
                   tdeeResult.status === 'ready' ? 'text-emerald-400' : 'text-zinc-400'
                 }`}
               >
@@ -473,10 +599,10 @@ export default function NutritionScreen() {
           {tdeeResult.status === 'calibrating' ? (
             <View>
               <View className="flex-row items-center justify-between mb-1.5">
-                <Text className="text-[11px] font-semibold text-zinc-300">
+                <Text className="text-xs font-semibold text-zinc-300">
                   Calibrating ({tdeeResult.daysLogged}/{tdeeResult.requiredDays} days of data)
                 </Text>
-                <Text className="text-[10px] text-accent-cyan font-bold font-mono">
+                <Text className="text-xs text-accent-cyan font-bold font-mono">
                   {Math.min(100, Math.round((tdeeResult.daysLogged / tdeeResult.requiredDays) * 100))}%
                 </Text>
               </View>
@@ -492,7 +618,7 @@ export default function NutritionScreen() {
                   }}
                 />
               </View>
-              <Text className="text-[10px] text-zinc-400 leading-tight">
+              <Text className="text-xs text-zinc-400 leading-tight">
                 Requires 14+ days of logged calories & 2 weigh-ins separated by 14+ days for scientific regression.
               </Text>
             </View>
@@ -514,7 +640,7 @@ export default function NutritionScreen() {
                       }`}
                     >
                       <Text
-                        className={`text-[10px] font-bold ${
+                        className={`text-xs font-bold ${
                           tdeeResult.slopeKgPerWeek > 0.05
                             ? 'text-amber-400'
                             : tdeeResult.slopeKgPerWeek < -0.05
@@ -527,7 +653,7 @@ export default function NutritionScreen() {
                         {tdeeResult.slopeKgPerWeek.toFixed(2)} {weightUnit}/week
                       </Text>
                     </View>
-                    <Text className="text-[10px] text-zinc-400 font-medium shrink-0" numberOfLines={1}>
+                    <Text className="text-xs text-zinc-400 font-medium shrink-0" numberOfLines={1}>
                       avg {tdeeResult.avgCalories} kcal
                     </Text>
                   </View>
@@ -537,6 +663,8 @@ export default function NutritionScreen() {
                 <TouchableOpacity
                   activeOpacity={0.8}
                   onPress={() => handleSetTDEEAsTarget(tdeeResult.tdee)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Set calorie target to empirical maintenance of ${tdeeResult.tdee} kcal`}
                   className="bg-accent-cyan px-3 py-2 rounded-xl flex-row items-center space-x-1 shadow-md shadow-cyan-500/20 shrink-0"
                 >
                   <Ionicons name="checkmark-circle-outline" size={14} color="#09090B" />
@@ -605,12 +733,14 @@ export default function NutritionScreen() {
                 <TouchableOpacity
                   activeOpacity={0.8}
                   onPress={openEditTargets}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Energy gauge: ${totals.calories} of ${targets.calories} kcal. Tap to edit targets`}
                   style={{ width: 156, height: 156, borderRadius: 78 }}
                   className="bg-zinc-950 border border-zinc-800/80 items-center justify-center px-4 shadow-xl"
                 >
                   <View className="flex-row items-center space-x-1 mb-0.5">
                     <Ionicons name="flame" size={13} color="#06B6D4" />
-                    <Text className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
+                    <Text className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
                       Daily Energy
                     </Text>
                   </View>
@@ -633,7 +763,7 @@ export default function NutritionScreen() {
                     }`}
                   >
                     <Text
-                      className={`text-[10px] font-bold ${
+                      className={`text-xs font-bold ${
                         !isOver ? 'text-cyan-400' : 'text-amber-400'
                       }`}
                     >
@@ -643,7 +773,7 @@ export default function NutritionScreen() {
                     </Text>
                   </View>
 
-                  <Text className="text-[10px] font-semibold text-zinc-500 mt-1">
+                  <Text className="text-xs font-semibold text-zinc-400 mt-1">
                     {Math.round(calRatio * 100)}% • Tap to edit
                   </Text>
                 </TouchableOpacity>
@@ -656,18 +786,20 @@ export default function NutritionScreen() {
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={openEditTargets}
+          accessibilityRole="button"
+          accessibilityLabel="Macro breakdown. Tap to edit daily macro targets"
           className="flex-row space-x-2"
         >
           {/* Protein */}
           <View className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl">
             <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-[10px] text-zinc-400 font-bold" numberOfLines={1}>PROTEIN</Text>
+              <Text className="text-xs text-zinc-400 font-bold" numberOfLines={1}>PROTEIN</Text>
               <Ionicons name="pencil-outline" size={10} color="#10B981" />
             </View>
             <Text className="text-base font-bold text-accent-emerald" numberOfLines={1} adjustsFontSizeToFit>
               {totals.protein}g
             </Text>
-            <Text className="text-[10px] text-zinc-500 mb-2" numberOfLines={1}>Target: {targets.protein}g</Text>
+            <Text className="text-xs text-zinc-400 mb-2" numberOfLines={1}>Target: {targets.protein}g</Text>
             <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
               <View
                 className="h-full bg-accent-emerald rounded-full"
@@ -679,13 +811,13 @@ export default function NutritionScreen() {
           {/* Carbs */}
           <View className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl">
             <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-[10px] text-zinc-400 font-bold" numberOfLines={1}>CARBS</Text>
+              <Text className="text-xs text-zinc-400 font-bold" numberOfLines={1}>CARBS</Text>
               <Ionicons name="pencil-outline" size={10} color="#06B6D4" />
             </View>
             <Text className="text-base font-bold text-accent-cyan" numberOfLines={1} adjustsFontSizeToFit>
               {totals.carbs}g
             </Text>
-            <Text className="text-[10px] text-zinc-500 mb-2" numberOfLines={1}>Target: {targets.carbs}g</Text>
+            <Text className="text-xs text-zinc-400 mb-2" numberOfLines={1}>Target: {targets.carbs}g</Text>
             <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
               <View
                 className="h-full bg-accent-cyan rounded-full"
@@ -697,13 +829,13 @@ export default function NutritionScreen() {
           {/* Fats */}
           <View className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 p-2.5 rounded-xl">
             <View className="flex-row items-center justify-between mb-1">
-              <Text className="text-[10px] text-zinc-400 font-bold" numberOfLines={1}>FATS</Text>
+              <Text className="text-xs text-zinc-400 font-bold" numberOfLines={1}>FATS</Text>
               <Ionicons name="pencil-outline" size={10} color="#F59E0B" />
             </View>
             <Text className="text-base font-bold text-amber-400" numberOfLines={1} adjustsFontSizeToFit>
               {totals.fats}g
             </Text>
-            <Text className="text-[10px] text-zinc-500 mb-2" numberOfLines={1}>Target: {targets.fats}g</Text>
+            <Text className="text-xs text-zinc-400 mb-2" numberOfLines={1}>Target: {targets.fats}g</Text>
             <View className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
               <View
                 className="h-full bg-amber-400 rounded-full"
@@ -713,11 +845,31 @@ export default function NutritionScreen() {
           </View>
         </TouchableOpacity>
 
+        {/* Prominent Log Meal Button by Today Totals */}
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => {
+            setMealError(null);
+            setMealDate(selectedDate);
+            setShowAddMealModal(true);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Log meal and macros"
+          className="bg-accent-cyan py-3.5 px-4 rounded-xl mt-4 flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/25"
+        >
+          <Ionicons name="add-circle" size={20} color="#09090B" />
+          <Text className="text-black font-black text-sm tracking-wide">
+            + Log Meal / Macros
+          </Text>
+        </TouchableOpacity>
+
         {/* Change Targets Action Button */}
         <TouchableOpacity
           activeOpacity={0.8}
           onPress={openEditTargets}
-          className="flex-row items-center justify-center space-x-2 py-2.5 mt-3 bg-zinc-900/90 border border-zinc-800 hover:border-cyan-500/50 rounded-xl"
+          accessibilityRole="button"
+          accessibilityLabel="Edit daily macro and calorie targets"
+          className="flex-row items-center justify-center space-x-2 py-2.5 mt-2.5 bg-zinc-900/90 border border-zinc-800 hover:border-cyan-500/50 rounded-xl"
         >
           <Ionicons name="options-outline" size={16} color="#06B6D4" />
           <Text className="text-xs font-bold text-accent-cyan">Edit Daily Macro & Calorie Targets</Text>
@@ -742,7 +894,7 @@ export default function NutritionScreen() {
                 className="flex-row items-center space-x-1 mt-0.5"
                 activeOpacity={0.7}
               >
-                <Text className="text-[11px] text-sky-400 font-semibold underline">
+                <Text className="text-xs text-sky-400 font-semibold underline">
                   Goal: {(waterTargetMl / 1000).toFixed(1)} L {isImperial ? `(${Math.round(waterTargetMl / 29.5735)} oz)` : `(${waterTargetMl.toLocaleString()} ml)`}
                 </Text>
                 <Ionicons name="pencil" size={10} color="#38BDF8" />
@@ -767,7 +919,7 @@ export default function NutritionScreen() {
                 / {(waterTargetMl / 1000).toFixed(1)} L
               </Text>
             </View>
-            <Text className="text-[10px] font-semibold text-zinc-500">
+            <Text className="text-xs font-semibold text-zinc-400">
               {currentWaterMl} ml {isImperial ? `(${Math.round(currentWaterMl / 29.5735)} oz)` : ''} • {waterPercent}%
             </Text>
           </TouchableOpacity>
@@ -789,7 +941,7 @@ export default function NutritionScreen() {
             className="flex-1 bg-zinc-900/90 border border-zinc-800 hover:border-sky-500/50 py-2 rounded-xl items-center justify-center"
           >
             <Text className="text-xs font-bold text-sky-300">+250 ml</Text>
-            <Text className="text-[9px] text-zinc-500 font-medium">{isImperial ? '8 oz' : 'Glass'}</Text>
+            <Text className="text-xs text-zinc-400 font-medium">{isImperial ? '8 oz' : 'Glass'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -798,7 +950,7 @@ export default function NutritionScreen() {
             className="flex-1 bg-zinc-900/90 border border-zinc-800 hover:border-sky-500/50 py-2 rounded-xl items-center justify-center"
           >
             <Text className="text-xs font-bold text-sky-300">+500 ml</Text>
-            <Text className="text-[9px] text-zinc-500 font-medium">{isImperial ? '17 oz' : 'Bottle'}</Text>
+            <Text className="text-xs text-zinc-400 font-medium">{isImperial ? '17 oz' : 'Bottle'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -807,7 +959,7 @@ export default function NutritionScreen() {
             className="flex-1 bg-zinc-900/90 border border-zinc-800 hover:border-sky-500/50 py-2 rounded-xl items-center justify-center"
           >
             <Text className="text-xs font-bold text-sky-300">+750 ml</Text>
-            <Text className="text-[9px] text-zinc-500 font-medium">{isImperial ? '25 oz' : 'Shaker'}</Text>
+            <Text className="text-xs text-zinc-400 font-medium">{isImperial ? '25 oz' : 'Shaker'}</Text>
           </TouchableOpacity>
 
           {currentWaterMl > 0 && (
@@ -835,7 +987,7 @@ export default function NutritionScreen() {
                 className="flex-1 text-white font-bold text-xs ml-2 py-1"
                 onSubmitEditing={() => handleLogExactWater()}
               />
-              <Text className="text-[10px] text-zinc-500 font-semibold">ml</Text>
+              <Text className="text-xs text-zinc-400 font-semibold">ml</Text>
             </View>
 
             <TouchableOpacity
@@ -854,21 +1006,21 @@ export default function NutritionScreen() {
               onPress={() => handleLogExactWater(150)}
               className="bg-zinc-900 border border-zinc-800/80 px-2.5 py-1 rounded-lg"
             >
-              <Text className="text-[10px] text-zinc-400 font-medium">+150 ml (Cup)</Text>
+              <Text className="text-xs text-zinc-400 font-medium">+150 ml (Cup)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={() => handleLogExactWater(330)}
               className="bg-zinc-900 border border-zinc-800/80 px-2.5 py-1 rounded-lg"
             >
-              <Text className="text-[10px] text-zinc-400 font-medium">+330 ml (Can)</Text>
+              <Text className="text-xs text-zinc-400 font-medium">+330 ml (Can)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={() => handleLogExactWater(1000)}
               className="bg-zinc-900 border border-zinc-800/80 px-2.5 py-1 rounded-lg"
             >
-              <Text className="text-[10px] text-zinc-400 font-medium">+1,000 ml (1 L)</Text>
+              <Text className="text-xs text-zinc-400 font-medium">+1,000 ml (1 L)</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -876,16 +1028,6 @@ export default function NutritionScreen() {
 
       {/* Meal Archetypes Quick-Log Carousel */}
       <MealArchetypesQuickAdd onLogMeal={handleQuickLogArchetype} />
-
-      {/* Fast Input Launch Button */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={() => setShowAddMealModal(true)}
-        className="bg-accent-cyan p-4 rounded-2xl mb-6 flex-row items-center justify-center space-x-2 shadow-lg shadow-cyan-500/20"
-      >
-        <Ionicons name="add-circle" size={22} color="#09090B" />
-        <Text className="text-black font-extrabold text-base">+ Log Meal / Macros</Text>
-      </TouchableOpacity>
 
       {/* Meals Breakdown List */}
       <View className="mb-10">
@@ -904,7 +1046,7 @@ export default function NutritionScreen() {
                 className="bg-rose-500/10 border border-rose-500/30 px-2 py-0.5 rounded flex-row items-center space-x-1"
               >
                 <Ionicons name="trash-outline" size={11} color="#F43F5E" />
-                <Text className="text-[10px] font-bold text-rose-400">Clear All</Text>
+                <Text className="text-xs font-bold text-rose-400">Clear All</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -935,7 +1077,12 @@ export default function NutritionScreen() {
 
                 <View className="flex-row items-center space-x-3">
                   <Text className="text-base font-bold text-accent-orange">{meal.calories} kcal</Text>
-                  <TouchableOpacity onPress={() => handleDelete(meal.id, meal.label)}>
+                  <TouchableOpacity
+                    onPress={() => handleDelete(meal.id, meal.label)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete meal ${meal.label}`}
+                    className="h-12 w-12 items-center justify-center"
+                  >
                     <Ionicons name="trash-outline" size={20} color="#EF4444" />
                   </TouchableOpacity>
                 </View>
@@ -945,7 +1092,7 @@ export default function NutritionScreen() {
                 <View className="mt-2.5 pt-2.5 border-t border-zinc-800/80 flex-row items-start space-x-2 bg-zinc-900/40 p-2.5 rounded-xl">
                   <Ionicons name="receipt-outline" size={13} color="#06B6D4" style={{ marginTop: 1 }} />
                   <View className="flex-1">
-                    <Text className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider mb-0.5">
+                    <Text className="text-xs uppercase font-bold text-cyan-400 tracking-wider mb-0.5">
                       Recipe & Ingredients
                     </Text>
                     <Text className="text-xs text-zinc-300 leading-relaxed font-normal">
@@ -959,192 +1106,7 @@ export default function NutritionScreen() {
         )}
       </View>
 
-      {/* Fast Input Modal */}
-      {showAddMealModal && (
-        <Modal visible={showAddMealModal} transparent animationType="slide">
-        <View className="flex-1 bg-black/80 justify-end">
-          <View className="bg-dark-card border-t border-zinc-800 rounded-t-3xl p-5">
-            <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-3">
-              <Text className="text-lg font-bold text-white">Quick Macro Entry</Text>
-              <TouchableOpacity onPress={() => setShowAddMealModal(false)}>
-                <Ionicons name="close" size={24} color="#A1A1AA" />
-              </TouchableOpacity>
-            </View>
 
-            {/* Meal Date Selector */}
-            <Text className="text-xs text-zinc-300 font-bold mb-2">Meal Date</Text>
-            <View className="flex-row space-x-2 mb-3">
-              <TouchableOpacity
-                onPress={() => setMealDateOption('selected')}
-                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
-                  mealDateOption === 'selected'
-                    ? 'bg-cyan-500/20 border-cyan-500'
-                    : 'bg-zinc-900 border-zinc-800'
-                }`}
-              >
-                <Text
-                  className={`text-[11px] font-bold ${
-                    mealDateOption === 'selected' ? 'text-cyan-400' : 'text-zinc-400'
-                  }`}
-                  numberOfLines={1}
-                >
-                  {getDateLabel(selectedDate)}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => setMealDateOption('today')}
-                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
-                  mealDateOption === 'today'
-                    ? 'bg-cyan-500/20 border-cyan-500'
-                    : 'bg-zinc-900 border-zinc-800'
-                }`}
-              >
-                <Text
-                  className={`text-[11px] font-bold ${
-                    mealDateOption === 'today' ? 'text-cyan-400' : 'text-zinc-400'
-                  }`}
-                >
-                  Today
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => setMealDateOption('yesterday')}
-                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
-                  mealDateOption === 'yesterday'
-                    ? 'bg-cyan-500/20 border-cyan-500'
-                    : 'bg-zinc-900 border-zinc-800'
-                }`}
-              >
-                <Text
-                  className={`text-[11px] font-bold ${
-                    mealDateOption === 'yesterday' ? 'text-cyan-400' : 'text-zinc-400'
-                  }`}
-                >
-                  Yesterday
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => setMealDateOption('custom')}
-                className={`flex-1 py-2 px-1 rounded-xl items-center border ${
-                  mealDateOption === 'custom'
-                    ? 'bg-cyan-500/20 border-cyan-500'
-                    : 'bg-zinc-900 border-zinc-800'
-                }`}
-              >
-                <Text
-                  className={`text-[11px] font-bold ${
-                    mealDateOption === 'custom' ? 'text-cyan-400' : 'text-zinc-400'
-                  }`}
-                >
-                  Custom
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {mealDateOption === 'custom' && (
-              <View className="mb-3">
-                <Text className="text-[11px] text-zinc-400 mb-1">Enter Date (YYYY-MM-DD):</Text>
-                <TextInput
-                  value={customMealDate}
-                  onChangeText={setCustomMealDate}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white px-3 py-2 rounded-xl text-sm font-semibold"
-                />
-              </View>
-            )}
-
-            <Text className="text-xs text-zinc-400 mb-1">Meal Name (Optional)</Text>
-            <TextInput
-              value={mealLabel}
-              onChangeText={setMealLabel}
-              placeholder="e.g. Post-workout Shake"
-              placeholderTextColor="#71717A"
-              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl mb-4 font-medium"
-            />
-
-            <View className="flex-row space-x-3 mb-4">
-              <View className="flex-1">
-                <Text className="text-xs text-zinc-400 mb-1">Calories (kcal)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={calories}
-                  onChangeText={setCalories}
-                  placeholder="500"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
-
-              <View className="flex-1">
-                <Text className="text-xs text-accent-emerald mb-1">Protein (g)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={protein}
-                  onChangeText={setProtein}
-                  placeholder="40"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
-            </View>
-
-            <View className="flex-row space-x-3 mb-6">
-              <View className="flex-1">
-                <Text className="text-xs text-accent-cyan mb-1">Carbs (g)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={carbs}
-                  onChangeText={setCarbs}
-                  placeholder="50"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
-
-              <View className="flex-1">
-                <Text className="text-xs text-amber-400 mb-1">Fats (g)</Text>
-                <TextInput
-                  keyboardType="numeric"
-                  value={fats}
-                  onChangeText={setFats}
-                  placeholder="15"
-                  placeholderTextColor="#71717A"
-                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
-                />
-              </View>
-            </View>
-
-            <View className="mb-5">
-              <View className="flex-row items-center justify-between mb-1">
-                <Text className="text-xs text-zinc-400">Recipe / Ingredients (Optional)</Text>
-                <Text className="text-[10px] text-zinc-500 italic">How it was made</Text>
-              </View>
-              <TextInput
-                value={mealRecipe}
-                onChangeText={setMealRecipe}
-                placeholder="e.g. 200g chicken breast, 150g jasmine rice, 1 tsp olive oil"
-                placeholderTextColor="#71717A"
-                multiline
-                numberOfLines={2}
-                textAlignVertical="top"
-                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-medium text-xs min-h-[60px]"
-              />
-            </View>
-
-            <TouchableOpacity
-              onPress={handleSaveMeal}
-              className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20"
-            >
-              <Text className="text-black font-extrabold text-base">Log Meal</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-      )}
 
       {/* Edit Daily Macro Targets Modal */}
       {showEditTargetsModal && (
@@ -1250,7 +1212,7 @@ export default function NutritionScreen() {
                         }`}
                       >
                         <Text
-                          className={`text-[11px] font-bold ${
+                          className={`text-xs font-bold ${
                             isSelected ? 'text-sky-400' : 'text-zinc-400'
                           }`}
                         >
@@ -1365,96 +1327,327 @@ export default function NutritionScreen() {
       </Modal>
       )}
 
-      {/* Jump to Date / Backdate Nutrition Modal */}
-      {showDatePickerModal && (
-        <Modal visible={showDatePickerModal} transparent animationType="fade">
+      <Modal
+        visible={showAddMealModal || datePickerTarget !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => datePickerTarget ? setDatePickerTarget(null) : setShowAddMealModal(false)}
+      >
+        {datePickerTarget ? (
           <View className="flex-1 bg-black/80 justify-center px-4">
-            <View className="bg-dark-card border border-zinc-800 p-5 rounded-2xl shadow-2xl">
-              <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+            <View className="bg-dark-card border border-zinc-800 p-5 rounded-3xl shadow-2xl max-h-[90%]">
+              <View className="flex-row items-center justify-between mb-3 border-b border-zinc-800 pb-2">
                 <View className="flex-row items-center space-x-2">
                   <Ionicons name="calendar" size={20} color="#06B6D4" />
-                  <Text className="text-lg font-bold text-white">Select Nutrition Date</Text>
+                  <Text className="text-base font-black text-white">Select date</Text>
                 </View>
-                <TouchableOpacity onPress={() => setShowDatePickerModal(false)}>
+                <TouchableOpacity
+                  onPress={() => setDatePickerTarget(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close calendar picker"
+                >
                   <Ionicons name="close" size={24} color="#A1A1AA" />
                 </TouchableOpacity>
               </View>
 
-              <Text className="text-xs text-zinc-400 mb-3">
-                View or backdate calorie and macronutrient intake for any past date:
-              </Text>
-
-              {/* Quick Presets */}
-              <View className="flex-row flex-wrap gap-2 mb-4">
-                {[
-                  { label: 'Today', date: getFormattedDate(0) },
-                  { label: 'Yesterday', date: getFormattedDate(-1) },
-                  { label: '2 Days Ago', date: getFormattedDate(-2) },
-                  { label: '3 Days Ago', date: getFormattedDate(-3) },
-                  { label: '1 Week Ago', date: getFormattedDate(-7) },
-                ].map((preset) => (
-                  <TouchableOpacity
-                    key={preset.label}
-                    onPress={() => {
-                      Haptics.selectionAsync();
-                      setSelectedDate(preset.date);
-                      setShowDatePickerModal(false);
-                    }}
-                    className={`py-2 px-3 rounded-xl border ${
-                      selectedDate === preset.date
-                        ? 'bg-cyan-500/20 border-cyan-500'
-                        : 'bg-zinc-900 border-zinc-800'
-                    }`}
-                  >
-                    <Text
-                      className={`text-xs font-bold ${
-                        selectedDate === preset.date ? 'text-cyan-400' : 'text-zinc-300'
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {/* Quick Presets */}
+                <View className="flex-row flex-wrap gap-1.5 mb-3">
+                  {[
+                    { label: 'Today', date: getLocalDate(0) },
+                    { label: 'Yesterday', date: getLocalDate(-1) },
+                    { label: '2 Days Ago', date: getLocalDate(-2) },
+                    { label: '1 Week Ago', date: getLocalDate(-7) },
+                  ].map((preset) => (
+                    <TouchableOpacity
+                      key={preset.label}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        selectCalendarDate(preset.date);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Select ${preset.label}, date ${preset.date}`}
+                      className={`py-1.5 px-3 rounded-xl border ${
+                        calendarSelection === preset.date
+                          ? 'bg-cyan-500/20 border-cyan-500'
+                          : 'bg-zinc-900 border-zinc-800'
                       }`}
                     >
-                      {preset.label}
-                    </Text>
+                      <Text
+                        className={`text-xs font-bold ${
+                          calendarSelection === preset.date ? 'text-cyan-400' : 'text-zinc-300'
+                        }`}
+                      >
+                        {preset.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {/* Month Navigation Switcher */}
+                <View className="flex-row items-center justify-between bg-zinc-900 border border-zinc-800 rounded-2xl px-3 py-2 mb-3">
+                  <TouchableOpacity
+                    onPress={handleCalPrevMonth}
+                    accessibilityRole="button"
+                    accessibilityLabel="Previous month"
+                    className="p-1.5 bg-zinc-800 rounded-lg"
+                  >
+                    <Ionicons name="chevron-back" size={16} color="#F4F4F5" />
                   </TouchableOpacity>
-                ))}
-              </View>
 
-              <Text className="text-xs text-zinc-300 font-bold mb-1.5">
-                Custom Date (YYYY-MM-DD):
-              </Text>
-              <TextInput
-                value={jumpDateInput}
-                onChangeText={setJumpDateInput}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="#71717A"
-                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-mono text-base mb-5"
-              />
+                  <Text className="text-sm font-black text-white">
+                    {CALENDAR_MONTH_NAMES[calMonth]} {calYear}
+                  </Text>
 
-              <View className="flex-row space-x-3">
-                <TouchableOpacity
-                  onPress={() => setShowDatePickerModal(false)}
-                  className="flex-1 bg-zinc-800 py-3 rounded-xl items-center border border-zinc-700"
-                >
-                  <Text className="text-zinc-300 font-semibold text-sm">Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => {
-                    const cleaned = jumpDateInput.trim();
-                    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
-                      Alert.alert('Invalid Format', 'Please enter date in YYYY-MM-DD format.');
-                      return;
+                  <TouchableOpacity
+                    onPress={handleCalNextMonth}
+                    accessibilityRole="button"
+                    accessibilityLabel="Next month"
+                    className="p-1.5 bg-zinc-800 rounded-lg"
+                  >
+                    <Ionicons name="chevron-forward" size={16} color="#F4F4F5" />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Day of Week Headers */}
+                <View className="flex-row mb-1.5">
+                  {CALENDAR_DAY_LABELS.map((day) => (
+                    <View key={day} className="w-[14.28%] items-center">
+                      <Text className="text-xs font-bold text-zinc-400 uppercase">
+                        {day}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Month Grid */}
+                <View className="flex-row flex-wrap mb-2">
+                  {calendarDays.map((item, index) => {
+                    if (!item) {
+                      return <View key={`empty-${index}`} className="w-[14.28%] h-10" />;
                     }
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                    setSelectedDate(cleaned);
-                    setShowDatePickerModal(false);
-                  }}
-                  className="flex-1 bg-accent-cyan py-3 rounded-xl items-center shadow-md shadow-cyan-500/20"
-                >
-                  <Text className="text-black font-extrabold text-sm">Jump to Date</Text>
-                </TouchableOpacity>
-              </View>
+
+                    const isSelected = item.dateStr === calendarSelection;
+                    const isToday = item.dateStr === todayStr;
+                    const hasMeals = loggedNutritionDates.has(item.dateStr);
+
+                    return (
+                      <TouchableOpacity
+                        key={item.dateStr}
+                        onPress={() => {
+                          Haptics.selectionAsync();
+                          selectCalendarDate(item.dateStr);
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Select date ${item.dateStr}${hasMeals ? ', meals logged' : ''}`}
+                        className="w-[14.28%] h-10 items-center justify-center p-0.5"
+                      >
+                        <View
+                          className={`w-8 h-8 rounded-xl items-center justify-center ${
+                            isSelected
+                              ? 'bg-cyan-500 border border-cyan-300'
+                              : isToday
+                              ? 'bg-zinc-800 border border-cyan-500/50'
+                              : 'bg-transparent'
+                          }`}
+                        >
+                          <Text
+                            className={`text-xs font-bold ${
+                              isSelected
+                                ? 'text-black font-extrabold'
+                                : isToday
+                                ? 'text-cyan-400'
+                                : 'text-zinc-300'
+                            }`}
+                          >
+                            {item.dayNumber}
+                          </Text>
+
+                          {/* Meal Indicator Dot */}
+                          {hasMeals && (
+                            <View
+                              className={`w-1 h-1 rounded-full mt-0.5 ${
+                                isSelected ? 'bg-black' : 'bg-cyan-400'
+                              }`}
+                            />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Legend */}
+                <View className="flex-row items-center justify-center py-2 border-t border-zinc-800 mb-3">
+                  <View className="flex-row items-center space-x-1.5">
+                    <View className="w-1.5 h-1.5 rounded-full bg-accent-cyan" />
+                    <Text className="text-xs text-zinc-400 font-medium">Meals Logged</Text>
+                  </View>
+                </View>
+
+                {/* Custom Date Input Fallback */}
+                <Text className="text-xs text-zinc-300 font-bold mb-1">
+                  Or Enter Date (YYYY-MM-DD):
+                </Text>
+                <TextInput
+                  value={jumpDateInput}
+                  onChangeText={(text) => { setJumpDateInput(text); setDateError(false); }}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#71717A"
+                  accessibilityLabel="Custom jump date input"
+                  className="bg-zinc-900 border border-zinc-800 text-white p-2.5 rounded-xl font-mono text-xs mb-3"
+                />
+
+                {dateError && <Text accessibilityRole="alert" className="text-rose-300 text-sm mb-3">Enter a valid calendar date.</Text>}
+                <View className="flex-row space-x-2">
+                  <TouchableOpacity
+                    onPress={() => setDatePickerTarget(null)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel date selection"
+                    className="flex-1 bg-zinc-800 py-2.5 rounded-xl items-center border border-zinc-700"
+                  >
+                    <Text className="text-zinc-300 font-semibold text-xs">Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const cleaned = jumpDateInput.trim();
+                      if (!isValidDateString(cleaned)) {
+                        setDateError(true);
+                        return;
+                      }
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      selectCalendarDate(cleaned);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Jump to custom date"
+                    className="flex-1 bg-accent-cyan py-2.5 rounded-xl items-center shadow-md shadow-cyan-500/20"
+                  >
+                    <Text className="text-black font-extrabold text-xs">Jump to Date</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
             </View>
           </View>
-        </Modal>
-      )}
+        ) : (
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} className="flex-1 bg-black/80 justify-end">
+          <ScrollView className="bg-dark-card border-t border-zinc-800 rounded-t-3xl max-h-[90%]" contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
+            <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-3">
+              <Text className="text-lg font-bold text-white">Quick Macro Entry</Text>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close meal entry" onPress={() => setShowAddMealModal(false)}>
+                <Ionicons name="close" size={24} color="#A1A1AA" />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={`Meal date ${mealDate}. Open calendar`}
+              onPress={() => openDatePicker('meal')}
+              className="flex-row justify-between items-center bg-zinc-900 border border-zinc-800 rounded-xl p-3 mb-4"
+            >
+              <Text className="text-sm font-semibold text-zinc-300">Meal date</Text>
+              <Text className="text-sm font-bold text-cyan-300">{getDateLabel(mealDate)} <Ionicons name="calendar-outline" size={16} /></Text>
+            </TouchableOpacity>
+
+            <Text className="text-xs text-zinc-400 mb-1">Meal Name (Optional)</Text>
+            <TextInput
+              accessibilityLabel="Meal name"
+                  value={mealLabel}
+              onChangeText={setMealLabel}
+              placeholder="e.g. Post-workout Shake"
+              placeholderTextColor="#71717A"
+              className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl mb-4 font-medium"
+            />
+
+            <View className="flex-row space-x-3 mb-4">
+              <View className="flex-1">
+                <Text className="text-xs text-zinc-400 mb-1">Calories (kcal)</Text>
+                <TextInput
+                  keyboardType="numeric"
+                  accessibilityLabel="Calories"
+                  value={calories}
+                  onChangeText={setCalories}
+                  placeholder="500"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                />
+              </View>
+
+              <View className="flex-1">
+                <Text className="text-xs text-accent-emerald mb-1">Protein (g)</Text>
+                <TextInput
+                  keyboardType="numeric"
+                  accessibilityLabel="Protein in grams"
+                  value={protein}
+                  onChangeText={setProtein}
+                  placeholder="40"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                />
+              </View>
+            </View>
+
+            <View className="flex-row space-x-3 mb-6">
+              <View className="flex-1">
+                <Text className="text-xs text-accent-cyan mb-1">Carbs (g)</Text>
+                <TextInput
+                  keyboardType="numeric"
+                  accessibilityLabel="Carbs in grams"
+                  value={carbs}
+                  onChangeText={setCarbs}
+                  placeholder="50"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                />
+              </View>
+
+              <View className="flex-1">
+                <Text className="text-xs text-amber-400 mb-1">Fats (g)</Text>
+                <TextInput
+                  keyboardType="numeric"
+                  accessibilityLabel="Fats in grams"
+                  value={fats}
+                  onChangeText={setFats}
+                  placeholder="15"
+                  placeholderTextColor="#71717A"
+                  className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-bold"
+                />
+              </View>
+            </View>
+
+            <View className="mb-5">
+              <View className="flex-row items-center justify-between mb-1">
+                <Text className="text-xs text-zinc-400">Recipe / Ingredients (Optional)</Text>
+                <Text className="text-xs text-zinc-400 italic">How it was made</Text>
+              </View>
+              <TextInput
+                accessibilityLabel="Recipe or ingredients"
+                  value={mealRecipe}
+                onChangeText={setMealRecipe}
+                placeholder="e.g. 200g chicken breast, 150g jasmine rice, 1 tsp olive oil"
+                placeholderTextColor="#71717A"
+                multiline
+                numberOfLines={2}
+                textAlignVertical="top"
+                className="bg-zinc-900 border border-zinc-800 text-white p-3 rounded-xl font-medium text-xs min-h-[60px]"
+              />
+            </View>
+
+            {mealError && (
+              <Text accessibilityRole="alert" accessibilityLiveRegion="polite" className="text-rose-300 text-sm mb-3">
+                {mealError}
+              </Text>
+            )}
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={handleSaveMeal}
+              className="bg-accent-cyan p-4 rounded-xl items-center shadow-md shadow-cyan-500/20"
+            >
+              <Text className="text-black font-extrabold text-base">Log Meal</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
+        )}
+      </Modal>
     </ScrollView>
   </View>
 );

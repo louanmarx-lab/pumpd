@@ -1,6 +1,7 @@
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { db } from '../config/firebase';
+import { db, auth } from '../config/firebase';
+import 'react-native-get-random-values';
 import { Split, Routine, Exercise, MuscleGroup } from '../types';
 
 export interface SharedExerciseData {
@@ -44,12 +45,8 @@ function sanitizeForFirestore<T>(data: T): T {
  * Generate a clean, human-readable 4-character random code (digits + uppercase letters excluding confusing 0/O, 1/I)
  */
 function generateRandomCode(): string {
-  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let result = '';
-  for (let i = 0; i < 4; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  const bytes=new Uint8Array(10);crypto.getRandomValues(bytes);
+  return Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('').toUpperCase();
 }
 
 /**
@@ -61,6 +58,7 @@ export async function shareSplitCloud(
   authorName: string,
   authorId: string
 ): Promise<string> {
+  if(!auth.currentUser||auth.currentUser.isAnonymous)throw new Error('Sign in and connect to the internet to publish a program code.');
   const codeNum = generateRandomCode();
   const shareCode = `SPLIT-${codeNum}`;
 
@@ -88,7 +86,7 @@ export async function shareSplitCloud(
     shareCode,
     type: 'split',
     authorName: authorName || 'RIPPED Athlete',
-    authorId: authorId || 'anonymous',
+    authorId: auth.currentUser?.uid || 'local',
     splitName: split.name || 'Workout Split',
     description: split.description || '',
     routines: routinesData,
@@ -104,6 +102,7 @@ export async function shareSplitCloud(
     await AsyncStorage.setItem(`${LOCAL_CACHE_PREFIX}${codeNum}`, serialized);
   } catch (cacheErr) {
     console.warn('[ShareSplit] Failed to cache locally:', cacheErr);
+
   }
 
   // Upload to Cloud Firestore
@@ -111,7 +110,9 @@ export async function shareSplitCloud(
     const docRef = doc(db, COLLECTION_NAME, shareCode);
     await setDoc(docRef, payload);
   } catch (cloudErr) {
-    console.warn('[ShareSplit] Cloud Firestore upload error (cached locally):', cloudErr);
+    console.warn('[ShareSplit] Cloud Firestore upload failed:',cloudErr);
+    throw cloudErr;
+
   }
 
   return shareCode;
@@ -127,6 +128,7 @@ export async function shareRoutineCloud(
   authorName: string,
   authorId: string
 ): Promise<string> {
+  if(!auth.currentUser||auth.currentUser.isAnonymous)throw new Error('Sign in and connect to the internet to publish a program code.');
   const codeNum = generateRandomCode();
   const shareCode = `WKT-${codeNum}`;
 
@@ -153,7 +155,7 @@ export async function shareRoutineCloud(
     shareCode,
     type: 'routine',
     authorName: authorName || 'RIPPED Athlete',
-    authorId: authorId || 'anonymous',
+    authorId: auth.currentUser?.uid || 'local',
     splitName: splitName || routine.name || 'Workout Routine',
     description: `Single workout routine: ${routine.name}`,
     routines: routinesData,
@@ -169,6 +171,7 @@ export async function shareRoutineCloud(
     await AsyncStorage.setItem(`${LOCAL_CACHE_PREFIX}${codeNum}`, serialized);
   } catch (cacheErr) {
     console.warn('[ShareSplit] Failed to cache routine locally:', cacheErr);
+
   }
 
   // Upload to Cloud Firestore
@@ -177,6 +180,7 @@ export async function shareRoutineCloud(
     await setDoc(docRef, payload);
   } catch (cloudErr) {
     console.warn('[ShareSplit] Cloud Firestore upload error for routine:', cloudErr);
+
   }
 
   return shareCode;
@@ -200,6 +204,7 @@ export async function fetchSharedSplitCloud(inputCode: string): Promise<SharedSp
     }
   } catch (err) {
     console.warn('[ShareSplit] Firestore lookup error, will check local cache:', err);
+
   }
 
   // 2. If user typed 4-character suffix without prefix (e.g. "8492"), try with prefixes in Firestore
@@ -222,6 +227,7 @@ export async function fetchSharedSplitCloud(inputCode: string): Promise<SharedSp
       }
     } catch (err) {
       console.warn('[ShareSplit] Prefix search error, checking local cache:', err);
+
     }
   }
 
@@ -244,6 +250,7 @@ export async function fetchSharedSplitCloud(inputCode: string): Promise<SharedSp
     }
   } catch (cacheErr) {
     console.warn('[ShareSplit] Local cache lookup error:', cacheErr);
+
   }
 
   return null;
